@@ -2,7 +2,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import { classifyChange, type ReleaseDecision } from "@von/release";
-import { diffDependencies, type Workspace } from "./workspace.ts";
+import {
+  diffDependencies,
+  isProtected,
+  protectedPaths,
+  type Workspace,
+} from "./workspace.ts";
 
 /**
  * The build agent.
@@ -28,6 +33,11 @@ export interface RunAgentOptions {
   message: string;
   /** Describes the app being edited; goes in the cached prefix. */
   appSummary: string;
+  /**
+   * Pooled apps share their rules and functions with every other pooled app,
+   * so those files are not theirs to edit. See `protectedPaths`.
+   */
+  backendTier: "pooled" | "dedicated";
   client?: Anthropic;
   signal?: AbortSignal;
 }
@@ -59,12 +69,42 @@ Write code that matches the surrounding file: same import style, same naming, sa
 
 Keep your replies to the user short and concrete. Say what you changed and what they will see. Do not narrate your file operations, restate the request, or list every file you touched.`;
 
+/**
+ * Tier-specific half of the system prompt. Two fixed strings rather than an
+ * interpolated one, so both stay cacheable across every app on that tier.
+ */
+const TIER_NOTES: Record<"pooled" | "dedicated", string> = {
+  pooled: `This app runs on a shared backend. It has its own isolated users and its own private data, but the security rules and the Cloud Functions are shared with other apps and are not part of this repo — you cannot edit firestore.rules, firebase.json, or anything under functions/.
+
+Almost everything can still be built: screens, navigation, state, styling, and reading and writing the app's own data all work normally. Data lives under the app's own tenant prefix, which the client library handles for you.
+
+If a request genuinely needs custom server-side code, a scheduled job, a database trigger, or custom security rules, do not try to work around it. Say plainly that it needs the app's own backend, describe in one sentence what that gives them, and offer to set it up.`,
+
+  dedicated: `This app has its own backend: its own database, its own authentication, and its own Cloud Functions deployed from this repo. firestore.rules and functions/ are yours to edit.
+
+When you add a screen that reads or writes a new collection, add the matching security rules in the same change. A screen shipped without rules either fails at runtime or, worse, leaves data readable by anyone signed in.`,
+};
+
 export async function* runAgent(
   opts: RunAgentOptions,
 ): AsyncGenerator<AgentEvent, void, unknown> {
   const client = opts.client ?? new Anthropic();
   const ws = opts.workspace;
   const pkgBefore = await ws.read("apps/expo/package.json");
+  const locked = protectedPaths(opts.backendTier);
+
+  /**
+   * Enforced here rather than only in the prompt. The system prompt tells the
+   * model these files are shared, but a prompt is guidance and this is a
+   * cross-tenant security boundary — it needs a check the model cannot talk
+   * its way past.
+   */
+  const guard = (path: string): string | null =>
+    isProtected(path, locked)
+      ? `error: ${path} is shared with every other app on this backend and cannot be edited here. ` +
+        `Solve this within the app's own code, or tell the user this needs their own backend ` +
+        `(their own database, functions and rules), which you can offer to set up.`
+      : null;
 
   const listFiles = betaZodTool({
     name: "list_files",
@@ -90,6 +130,8 @@ export async function* runAgent(
       "Create a file, or replace one entirely. For a small change to a large file prefer edit_file, which is cheaper and less likely to drop surrounding code.",
     inputSchema: z.object({ path: z.string(), contents: z.string() }),
     run: async ({ path, contents }) => {
+      const denied = guard(path);
+      if (denied) return denied;
       await ws.write(path, contents);
       return `wrote ${path} (${contents.split("\n").length} lines)`;
     },
@@ -105,6 +147,8 @@ export async function* runAgent(
       new_text: z.string(),
     }),
     run: async ({ path, old_text, new_text }) => {
+      const denied = guard(path);
+      if (denied) return denied;
       const current = await ws.read(path);
       if (current === null) return `error: no file at ${path}`;
       const count = current.split(old_text).length - 1;
@@ -130,6 +174,8 @@ export async function* runAgent(
     system: [
       // Cached prefix: identical for every request the platform ever makes.
       { type: "text", text: SYSTEM_CORE, cache_control: { type: "ephemeral" } },
+      // One of two fixed strings, so it also caches across apps.
+      { type: "text", text: TIER_NOTES[opts.backendTier], cache_control: { type: "ephemeral" } },
       // Per-app, stable across a session — cached separately.
       { type: "text", text: opts.appSummary, cache_control: { type: "ephemeral" } },
     ],

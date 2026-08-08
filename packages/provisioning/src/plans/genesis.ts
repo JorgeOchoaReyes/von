@@ -4,6 +4,7 @@ import {
   anonymousAuthDriver,
   deployServiceAccountDriver,
   firebaseProjectDriver,
+  databaseIdFor,
   firebaseWebAppDriver,
   firestoreDriver,
   gcipTenantDriver,
@@ -114,14 +115,20 @@ export function genesisPlan(deps: GenesisDeps): Plan {
       }),
     },
     {
+      // Runs for BOTH tiers. A dedicated app gets `(default)` in its own
+      // project; a pooled app gets its own named database inside the pool
+      // project. Pooled apps are not separated by a path prefix — see the
+      // note on FirestoreSpec.databaseId.
       id: "firestore",
       driver: firestoreDriver(google),
-      when: isDedicated,
       needs: ["firebaseProject"],
       spec: (ctx) => ({
         appId: input(ctx).appId,
-        projectId: ctx.outputs.firebaseProject!.projectId as string,
+        projectId: isDedicated(ctx)
+          ? (ctx.outputs.firebaseProject!.projectId as string)
+          : deps.google.poolProjectId,
         locationId: deps.google.locationId,
+        databaseId: isDedicated(ctx) ? "(default)" : databaseIdFor(input(ctx).appId),
       }),
     },
     {
@@ -235,7 +242,7 @@ export function resolveRuntimeConfig(ctx: PlanContext, deps: GenesisDeps): Runti
       backendTier: "dedicated",
       firebase: firebase(dedicated),
       gcipTenantId: null,
-      dataPrefix: "",
+      firestoreDatabaseId: "(default)",
       functionsRegion: "us-central1",
     };
   }
@@ -250,9 +257,9 @@ export function resolveRuntimeConfig(ctx: PlanContext, deps: GenesisDeps): Runti
     backendTier: "pooled",
     firebase: firebase(deps.google.poolWebConfig),
     gcipTenantId: tenantId,
-    // Every pooled app's data lives under its own prefix, enforced by the
-    // pooled Firestore rules against the tenant claim on the caller's token.
-    dataPrefix: `t/${tenantId}`,
+    // The app's own Firestore database inside the pool project: its own
+    // indexes, its own rules, its own backups.
+    firestoreDatabaseId: (ctx.outputs.firestore?.databaseId as string) ?? "(default)",
     functionsRegion: "us-central1",
   };
 }

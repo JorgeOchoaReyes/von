@@ -259,11 +259,34 @@ export interface FirestoreSpec {
   appId: string;
   projectId: string;
   locationId: string;
+  /**
+   * Firestore database id. `(default)` for a dedicated project; a per-app id
+   * for a pooled app.
+   *
+   * A *named database per app* rather than a path prefix inside one shared
+   * database is the single most important isolation decision in the pooled
+   * tier. A shared database means shared fate on things that are per-database,
+   * not per-document:
+   *
+   *   - composite indexes (capped ~200 per database — a few per app and one
+   *     tenant's data model exhausts indexing for everyone);
+   *   - the security rules file, where one bad rule is a cross-tenant leak;
+   *   - backup/restore and point-in-time recovery granularity, so you cannot
+   *     restore one app without restoring all of them;
+   *   - per-database throughput and hot-spotting behaviour.
+   *
+   * Separate databases cost nothing extra, are created in seconds, and turn
+   * every one of those from a fleet-wide incident into a single-app one.
+   */
+  databaseId: string;
 }
 
-export function firestoreDriver(
-  ctx: GoogleCtx,
-): Driver<FirestoreSpec, Record<string, unknown>> {
+export interface FirestoreOutputs extends Record<string, unknown> {
+  externalId: string;
+  databaseId: string;
+}
+
+export function firestoreDriver(ctx: GoogleCtx): Driver<FirestoreSpec, FirestoreOutputs> {
   return {
     kind: "firebase.firestore",
     key: (s) => `firebase.firestore:${s.appId}`,
@@ -271,32 +294,44 @@ export function firestoreDriver(
     async read(spec) {
       const db = await gapi(
         ctx,
-        `https://firestore.googleapis.com/v1/projects/${spec.projectId}/databases/(default)`,
+        `https://firestore.googleapis.com/v1/projects/${spec.projectId}/databases/${encodeURIComponent(spec.databaseId)}`,
         { method: "GET", context: "read firestore" },
       ).catch(() => null);
-      return db ? { externalId: db.name, name: db.name } : null;
+      return db ? { externalId: db.name, databaseId: spec.databaseId } : null;
     },
 
     async create(spec) {
       const op = await gapi(
         ctx,
-        `https://firestore.googleapis.com/v1/projects/${spec.projectId}/databases?databaseId=(default)`,
+        `https://firestore.googleapis.com/v1/projects/${spec.projectId}/databases?databaseId=${encodeURIComponent(spec.databaseId)}`,
         {
           method: "POST",
           context: "create firestore",
           body: JSON.stringify({
             locationId: spec.locationId,
             type: "FIRESTORE_NATIVE",
-            // Rules are deployed from the generated repo, so the database
-            // itself starts locked and the repo's firestore.rules is the
-            // source of truth from the first deploy onward.
             concurrencyMode: "OPTIMISTIC",
+            // Deleting a pooled app should not be able to delete data by
+            // accident; the platform removes the protection explicitly.
+            deleteProtectionState: "DELETE_PROTECTION_ENABLED",
           }),
         },
       );
-      return { externalId: op.name ?? `projects/${spec.projectId}/databases/(default)` };
+      return {
+        externalId:
+          op?.name ?? `projects/${spec.projectId}/databases/${spec.databaseId}`,
+        databaseId: spec.databaseId,
+      };
     },
   };
+}
+
+/**
+ * Firestore database ids must be 4-63 chars, lowercase alphanumeric or hyphen,
+ * start with a letter and not end with one. `(default)` is reserved.
+ */
+export function databaseIdFor(appId: string): string {
+  return `db-${appId.replace(/^app_/, "").toLowerCase()}`.slice(0, 63);
 }
 
 export interface AnonAuthSpec {

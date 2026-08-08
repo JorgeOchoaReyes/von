@@ -1,0 +1,51 @@
+rules_version = '2';
+
+// Pooled-tier Firestore rules — deployed per app, to that app's own database.
+//
+// With a database per app (docs/ARCHITECTURE.md §3.1) the database itself is
+// the isolation boundary, so these rules no longer carry a /t/{tenantId} path
+// prefix. They are deliberately the *same shape* as the dedicated-tier rules in
+// templates/app-blueprint/firestore.rules, so an app's code and security model
+// are unchanged when it is promoted to its own project.
+//
+// The tenant check below is defence in depth, not the primary boundary. The
+// primary boundary is that this database is only reachable with this app's
+// Firebase config; the claim check means that even a mis-routed client holding
+// a token from another pooled app is refused.
+//
+// Deployment: these are pushed by Von's control plane, NOT by the app's own CI.
+// Deploying rules to the pool project needs credentials scoped to the whole
+// pool, and handing those to a generated repo would give one app's CI write
+// access to every other app's database. The control plane validates and deploys
+// to exactly one database.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // The GCIP tenant this app owns. Substituted at deploy time.
+    function appTenant() {
+      return "{{GCIP_TENANT_ID}}";
+    }
+
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.firebase.tenant == appTenant();
+    }
+
+    // Per-user private tree.
+    match /users/{uid}/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // App-wide content: readable by this app's users, written only by platform
+    // functions using admin credentials (which bypass these rules).
+    match /shared/{document=**} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -4,11 +4,12 @@ import { z } from "zod";
  * Backend isolation tier. This is the single most important scaling knob in the
  * platform — see docs/ARCHITECTURE.md §3.
  *
- * - `pooled`   — the app runs against a shared Firebase project, isolated by a
- *                Google Cloud Identity Platform *tenant* (its own user pool)
- *                and a `/t/{tenantId}/...` Firestore path prefix enforced by
- *                security rules. Provisioning is ~1s, so a brand-new app is
- *                usable immediately. This is the default.
+ * - `pooled`   — the app lives in a shared Firebase project but owns two things
+ *                outright: a Google Cloud Identity Platform *tenant* (its own
+ *                user pool, so its users cannot sign into any other app) and
+ *                its own named Firestore *database* (its own indexes, rules,
+ *                backups and throughput). Provisioning takes seconds, so a
+ *                brand-new app is usable immediately. This is the default.
  * - `dedicated`— the app owns a real Firebase project, created via the Firebase
  *                Management API. Takes 1-3 minutes and consumes GCP project
  *                quota, so it is only provisioned on publish/upgrade.
@@ -89,8 +90,15 @@ export const RuntimeConfig = z.object({
   }),
   /** Present only for pooled apps; passed to `auth.tenantId` on the client. */
   gcipTenantId: z.string().nullable(),
-  /** Firestore path prefix. `""` for dedicated, `t/{gcipTenantId}` for pooled. */
-  dataPrefix: z.string(),
+  /**
+   * Firestore database this app owns. `(default)` for a dedicated project, a
+   * per-app id for a pooled one. Passed to `getFirestore(app, databaseId)`.
+   *
+   * A database per app rather than a path prefix inside a shared one: indexes,
+   * rules, backups and throughput are all per-database, so sharing one makes
+   * every app's data model everyone else's problem.
+   */
+  firestoreDatabaseId: z.string(),
   functionsRegion: z.string().default("us-central1"),
 });
 export type RuntimeConfig = z.infer<typeof RuntimeConfig>;

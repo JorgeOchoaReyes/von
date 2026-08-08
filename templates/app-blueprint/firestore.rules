@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// Dedicated-tier Firestore rules — owned by this app, editable by the agent.
+//
+// This app has its own Firebase project, so there is no tenant boundary to
+// enforce: every user in this project is a user of this app. The shapes below
+// deliberately mirror the pooled rules minus the /t/{tenantId} prefix, so code
+// written against the pooled backend keeps working after promotion.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Everything under users/{uid} is private to that user.
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // App-wide content: readable by any signed-in user, written only by
+    // Cloud Functions using admin credentials (which bypass these rules).
+    match /shared/{document=**} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -47,6 +47,28 @@ export class InMemoryWorkspace implements Workspace {
 }
 
 /**
+ * Paths an agent may not write, given the app's backend tier.
+ *
+ * On a pooled app the Firestore rules and the Cloud Functions are *shared with
+ * every other pooled app* — they live in the pool project, not in this app's
+ * repo. An agent editing them would not be changing one app's backend; it would
+ * be changing everyone's, and a bad rule is a cross-tenant data leak rather
+ * than a bug in one app.
+ *
+ * So on pooled apps these are read-only, and a request that genuinely needs
+ * custom server code or custom rules is a signal to promote the app to its own
+ * project — where the same files become fully editable.
+ */
+export function protectedPaths(backendTier: "pooled" | "dedicated"): string[] {
+  if (backendTier === "dedicated") return [];
+  return ["firestore.rules", "firestore.indexes.json", "firebase.json", "functions/"];
+}
+
+export function isProtected(path: string, protectedList: string[]): boolean {
+  return protectedList.some((p) => (p.endsWith("/") ? path.startsWith(p) : path === p));
+}
+
+/**
  * Dependency names added/removed between two package.json revisions.
  * Feeds the release classifier, which treats an unrecognised new dependency as
  * native-affecting.

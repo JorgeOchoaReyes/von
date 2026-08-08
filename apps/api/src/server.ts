@@ -87,7 +87,12 @@ app.post("/v1/apps/:id/chat", async (c) => {
     await stream.writeSSE({ event: "run.start", data: JSON.stringify({ runId }) });
 
     try {
-      for await (const ev of runAgent({ workspace, message, appSummary: summary })) {
+      for await (const ev of runAgent({
+        workspace,
+        message,
+        appSummary: summary,
+        backendTier: target.backendTier,
+      })) {
         if (ev.type === "text") {
           await stream.writeSSE({ event: "text", data: JSON.stringify({ text: ev.text }) });
         } else if (ev.type === "tool") {

@@ -51,15 +51,18 @@ a real, published, paying app. The failure is using them as the *default*.
 
 ### Tier 0 — Pooled (default, instant, free)
 
-The app does **not** get a GCP project. It gets:
+The app does **not** get a GCP project. It gets, inside a shared pool project:
 
-- a **GCIP tenant** inside a shared pool project — its own isolated user pool,
-  its own sign-in settings, created in about a second;
-- a Firestore path prefix, `t/{tenantId}/…`, enforced by security rules that
-  read the tenant claim off the caller's token;
-- **shared, platform-owned Cloud Functions**, not per-app ones. The generated
-  app calls the same `generateCourse`-style callables every pooled app calls;
-  the function reads the tenant from the auth token and scopes its writes.
+- its own **GCIP tenant** — a genuinely separate user pool. A user of app A
+  cannot authenticate into app B: different tenant, different credential store,
+  different uid space. Created in about a second.
+- its own **named Firestore database**. Not a path prefix inside a shared
+  database — an actual separate database, which is the difference between
+  isolated and merely namespaced. See §3.1.
+- **shared, platform-owned Cloud Functions**. Tier 0 users do not write server
+  code; the generated app calls the same platform callables every pooled app
+  calls, and the function scopes its work by the tenant claim on the caller's
+  token.
 - delivery through the **shell app** — Von's own host binary — on a per-app
   **EAS Update channel**. No native build.
 
@@ -67,6 +70,36 @@ Time from "user finishes describing the app" to "user is using it on their
 phone": seconds. Marginal cost per app: Firestore storage.
 
 **This is where the overwhelming majority of apps live, permanently.**
+
+### 3.1 Blast radius: why a database per app, not a path prefix
+
+The requirement is that one app's problems cannot break everyone else's apps.
+Path-prefixing inside one shared Firestore database fails that, because the
+things that break are **per-database, not per-document**:
+
+| Shared resource | What one app can do to everyone |
+|---|---|
+| **Composite indexes** (~200 per database) | A few indexes per app and one tenant's data model exhausts indexing for the whole pool. New queries silently fail to deploy fleet-wide. This alone disqualifies the design. |
+| **The security rules file** | One rules file governs the whole database. A bad rule is not one app's bug, it is a cross-tenant data leak. |
+| **Backup / point-in-time recovery** | Granularity is the database. You cannot restore one app without restoring all of them, so any recovery is a fleet-wide rollback. |
+| **Hot-spotting and throughput** | Sequential keys or a write-heavy collection degrade neighbours. |
+
+A **named database per app** removes every row of that table. Databases are
+created in seconds, cost nothing extra at rest, and each carries its own
+indexes, own rules, own backups, own throughput. The cost is a tighter per-project
+cap (~100 databases instead of ~1000 GCIP tenants), which just means more pool
+projects — and those are provisioned in bulk, ahead of demand, with nobody
+waiting (§5).
+
+What *remains* shared in Tier 0, and how it is contained:
+
+- **Cloud Functions.** Since Tier 0 runs no user-written server code, the risk
+  is traffic, not code: one app's volume consuming the project's function
+  concurrency. Contained with per-tenant rate limits and concurrency caps
+  enforced inside the platform function, plus per-tenant quota alerting. The
+  moment an app needs *custom* server code, that is the signal to promote it.
+- **Project-level API quotas.** Bounded by pool size; a pool is ~100 apps, not
+  100,000.
 
 ### Tier 1 — Dedicated (on publish / on payment)
 
@@ -121,11 +154,14 @@ const config = await fetchRuntimeConfig(VON_APP_ID);
 ```
 
 `RuntimeConfig` (see `packages/core/src/domain.ts`) carries the Firebase web
-config, the optional `gcipTenantId`, and the `dataPrefix`. Pooled and dedicated
-apps differ *only* in those values. Promotion becomes:
+config, the optional `gcipTenantId`, and the `firestoreDatabaseId`. Pooled and
+dedicated apps differ *only* in those values. Promotion becomes:
 
 1. run `genesisPlan` with `backendTier: "dedicated"`,
-2. migrate the `t/{tenantId}/…` subtree into the new project,
+2. export the app's database and import it into the new project — a managed
+   Firestore export/import of one whole database, not a bespoke subtree
+   extraction. This is a second reason the database-per-app split matters:
+   it makes promotion a standard operation instead of a migration script.
 3. flip the runtime config.
 
 No rebuild. No reinstall. No store review. That single indirection is what makes
@@ -135,18 +171,26 @@ the tier system usable rather than theoretical.
 
 ## 5. Scaling the pool itself
 
-One pool project does not hold every app — GCIP allows on the order of a
-thousand tenants per project. So pools are **sharded**:
+One pool project does not hold every app. Two per-project limits bind, and the
+tighter one wins:
 
-- pool projects are provisioned *ahead of demand* by the platform, not on the
-  user's critical path;
-- each holds ~1000 apps;
-- an allocator hands a new app the least-loaded pool with capacity;
-- `App.gcipTenantId` plus the pool's project id fully identify where an app's
-  data lives.
+- GCIP allows on the order of a **thousand tenants** per project;
+- Firestore allows on the order of a **hundred databases** per project (a quota
+  that can be raised, but not indefinitely).
 
-Growing to 100k apps is then 100 pool projects — a quota number you can actually
-get, provisioned by you, at your pace, with no user waiting on any of it.
+Since every pooled app now owns a database (§3), **the database quota is the
+binding constraint and pools shard at roughly 100 apps each** — not the ~1000
+an earlier draft of this document assumed. That is 10x more pool projects than
+first estimated: 100k apps is on the order of 1000 pool projects.
+
+That is still fine, and it is fine for a specific reason: pool projects are
+**platform-provisioned ahead of demand**, in bulk, on your schedule. Nobody
+waits on one. Compare that to 100k *dedicated* projects, which you could never
+get quota for and which would each be created on a user's critical path.
+
+- an allocator hands a new app the least-loaded pool with database capacity;
+- `App.gcipTenantId` + the pool project id + the app's `firestoreDatabaseId`
+  fully identify where an app's users and data live.
 
 ---
 
@@ -291,3 +335,56 @@ essentially verbatim.
 **Added:** a type-check gate in `eas-update.yml` before publishing. In
 ByteLearning a human wrote and reviewed the diff before pushing; here an agent
 wrote it, and OTA reaches devices with no review step in between.
+
+---
+
+## 11. Decision: Firebase or Supabase for the data tier?
+
+Supabase is the natural alternative — close enough to Firebase to be a small
+conceptual jump, with Postgres underneath. Worth taking seriously, so here is
+the comparison on the axis that actually matters, blast radius:
+
+| | Firestore, database per app | Supabase, schema per app (pooled) | Supabase, project per app |
+|---|---|---|---|
+| Provision time | seconds | milliseconds (`CREATE SCHEMA`) | 1–2 min (a Postgres instance) |
+| Idle cost per app | ~$0 (serverless) | amortised instance cost | a real per-project floor |
+| Index isolation | own | own | own |
+| Rules isolation | own rules file | own RLS policies | own |
+| **Identity isolation** | **own GCIP tenant** | **shared — one `auth.users` table** | own |
+| Noisy neighbour | strong — serverless, no shared CPU | weaker — shared CPU, shared connection pool | strong |
+| Density per project | ~100 databases | thousands of schemas | 1 |
+| Agent ergonomics | rules DSL + index JSON | **SQL migrations — far more reviewable** | same |
+
+**Recommendation: stay on Firebase for v1.** Three reasons, in order of weight:
+
+1. **Identity isolation is the deciding factor.** Supabase Auth is per-*project*.
+   Pooled Supabase means every app shares one `auth.users` table — a user of
+   app A exists in app B. There is no in-project equivalent of a GCIP tenant.
+   You could fake it with a shared identity provider and an `app_id` JWT claim,
+   but then "their own users" is a claim you cannot honestly make. GCIP tenants
+   give it for free.
+2. **Serverless beats shared CPU for the pooled tier.** Thousands of mostly-idle
+   experimental apps is exactly Firestore's shape and exactly Postgres's worst
+   shape — a schema-per-app pool shares a connection pool and CPU, so one
+   runaway query degrades neighbours. Firestore has no shared compute to
+   contend for.
+3. **It is proven and shipping.** ByteLearning's auth, functions, client code
+   and CI all work today. Rewriting the data layer before v1 spends weeks to
+   arrive back where we started, with new unknowns.
+
+**Where Supabase genuinely wins, and when to revisit.** Its real advantage is
+agent ergonomics: a SQL migration is enormously easier for an agent to write
+correctly and for a human to review than Firestore's rules DSL plus index JSON.
+Per-app Edge Functions are also a better isolation story than shared Cloud
+Functions. Both of those bite hardest in the **dedicated** tier, where apps have
+custom server logic — so the honest position is:
+
+> Firebase for v1 and for the pooled tier. Re-evaluate Supabase for the
+> dedicated tier once we see how often generated apps need custom server code
+> and custom schema. Nothing in the design prevents Tier 1 running on a
+> different stack from Tier 0 — `RuntimeConfig` is already the seam.
+
+**What would change the recommendation:** if pooled apps turn out to need
+custom server code often, the shared-Functions constraint becomes the binding
+problem rather than identity, and per-app Edge Functions start to outweigh
+GCIP tenants.
