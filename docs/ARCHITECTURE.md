@@ -388,3 +388,73 @@ custom server logic — so the honest position is:
 custom server code often, the shared-Functions constraint becomes the binding
 problem rather than identity, and per-app Edge Functions start to outweigh
 GCIP tenants.
+
+---
+
+## 12. Definitions: pool project and shell app
+
+Two pieces of platform-owned infrastructure the rest of this document assumes.
+
+### Pool project
+
+A **Firebase/GCP project that Von owns and many customers' apps live inside**.
+Concretely, `von-pool-001`. It is created by you, in bulk, ahead of demand — never
+on a user's critical path.
+
+Inside one pool project, each app gets:
+
+- its own **GCIP tenant** — an isolated user pool, so app A's users cannot sign
+  into app B;
+- its own **named Firestore database** — its own indexes, rules, backups and
+  throughput.
+
+A pool holds roughly 100 apps, bound by the Firestore database quota. Reaching
+100k apps is therefore ~1000 pool projects. `allocatePool` decides which pool a
+new app lands in, never overfills one, and is sticky so a re-run of genesis
+resolves to the same pool.
+
+The whole point: **a new app consumes no GCP project quota and waits on no
+project creation.** Provisioning is seconds instead of 1–3 minutes.
+
+### Shell app
+
+One Expo binary that Von builds and publishes **once**, which the user installs
+**once**. A customer's app is delivered into it as a JavaScript bundle over an
+EAS Update channel, so making an app requires no native build at all.
+
+This is the mechanism behind "describe it, use it in a minute" for a *brand-new*
+app. It is also the least-proven part of this design — ByteLearning never did it
+— and it carries three real constraints:
+
+1. **Runtime channel switching requires disabling anti-bricking measures.**
+   `Updates.setUpdateURLAndRequestHeadersOverride()` (SDK 52+, expo-updates
+   0.27+) is what lets one binary point at different apps' channels. Expo
+   requires `disableAntiBrickingMeasures: true` to use it. On a binary that runs
+   *many customers' apps*, that means removing the safety net that stops a bad
+   bundle from bricking the app — and one bad bundle bricks the shell for that
+   user, not just one of their apps.
+2. **The shell's native modules are fixed at build time.** Any app needing a
+   native module the shell was not built with cannot run inside it. The shell
+   has to ship a kitchen-sink set (camera, notifications, …) and is still a
+   ceiling on what a generated app can be.
+3. **One update loads at a time.** Switching between a user's apps means
+   overriding the channel and reloading.
+
+### The alternative: no shell app
+
+Every app is `standalone` from the start — its own EAS project, bundle id and
+binaries. The first build costs ~10 minutes, once. **Every iteration after that
+is still a ~1 minute OTA**, because an installed build receives updates on its
+own channel with none of the above machinery.
+
+What is lost: the very first run is ten minutes instead of one.
+What is gained: no `disableAntiBrickingMeasures`, no fixed native ceiling, no
+channel-override complexity, and one less axis in the system.
+
+The instant-feedback gap can be covered by a **web preview** — the same Expo
+bundle rendered in the chat — which is genuinely instant, needs no binary, and
+is useful regardless of which delivery model wins.
+
+**Recommendation: drop the shell app for v1.** Note the two axes are
+independent, and this changes only delivery: pooled backends (§3) are unaffected
+and remain the default.
