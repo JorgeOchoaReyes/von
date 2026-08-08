@@ -22,6 +22,12 @@ export interface EasCtx {
   /** Expo account (org) id that owns generated projects. */
   accountId: string;
   accountName: string;
+  /**
+   * EAS project id of Von's **shell app** — the host binary that pooled apps
+   * are delivered inside. Shell-delivered apps do not get their own EAS
+   * project, so their update channel is created on this one.
+   */
+  shellProjectId: string;
 }
 
 async function graphql<T>(

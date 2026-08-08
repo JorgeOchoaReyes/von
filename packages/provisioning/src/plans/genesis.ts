@@ -67,8 +67,10 @@ const input = (ctx: PlanContext) => ctx.input as GenesisInput;
  *   DEPLOY.md §5.1  add EXPO_TOKEN secret          -> github.secret
  *
  * For a pooled + shell app — the default, and what a user gets seconds after
- * describing their app — only `gcip.tenant`, `github.repo` and `eas.channel`
- * actually run. The rest are skipped until the app is promoted.
+ * describing their app — only five steps run: `gcipTenant`, `firestore`,
+ * `repo`, `easChannel`, `secrets`. Every step that creates or bills a GCP
+ * project is skipped until the app is promoted. See test/genesis.test.ts,
+ * which asserts exactly that list.
  */
 export function genesisPlan(deps: GenesisDeps): Plan {
   const google = {
@@ -182,11 +184,13 @@ export function genesisPlan(deps: GenesisDeps): Plan {
       needs: ["easProject"],
       spec: (ctx) => ({
         appId: input(ctx).appId,
-        // Shell apps publish into the shared host project; standalone apps into
-        // their own. Either way the channel name is derived from the app id.
+        // Shell apps publish into the shell app's EAS project; standalone apps
+        // into their own. Either way the channel name is derived from the app
+        // id, never from anything user-supplied — for a shell app the channel
+        // is the only thing separating its bundle from another tenant's.
         easProjectId:
           (ctx.outputs.easProject?.projectId as string | undefined) ??
-          deps.eas.accountId,
+          deps.eas.shellProjectId,
         channelName: `app-${input(ctx).appId.slice(-12)}`,
       }),
     },

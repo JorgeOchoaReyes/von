@@ -43,6 +43,9 @@ function deps(): GenesisDeps {
       token: async () => need("EXPO_TOKEN"),
       accountId: need("EXPO_ACCOUNT_ID"),
       accountName: need("EXPO_ACCOUNT_NAME"),
+      // Von's shell app. Every pooled app's update channel is created on this
+      // project, since shell-delivered apps have no EAS project of their own.
+      shellProjectId: need("VON_SHELL_EAS_PROJECT_ID"),
     },
   };
 }

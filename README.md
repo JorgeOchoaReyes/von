@@ -96,6 +96,7 @@ All platform-owned. Users supply none of these — that is the point.
 | `VON_GITHUB_ORG` | Org that owns generated repos |
 | `VON_TEMPLATE_REPO` | `owner/repo` of the blueprint, marked as a template |
 | `EXPO_TOKEN` / `EXPO_ACCOUNT_ID` / `EXPO_ACCOUNT_NAME` | Platform's Expo org |
+| `VON_SHELL_EAS_PROJECT_ID` | The shell app's EAS project — pooled apps' update channels live here |
 | `GEMINI_API_KEY` | Handed to generated apps' Cloud Functions |
 
 ---
