@@ -5,10 +5,29 @@ import {
   runPlan,
   type GenesisDeps,
   type GenesisInput,
+  allocatePool,
+  InMemoryPoolStore,
   type GitHubCtx,
   type PlanContext,
+  type PoolStore,
 } from "@von/provisioning";
 import type { Store } from "./store.ts";
+
+/**
+ * Pool registry.
+ *
+ * In-memory for now, seeded from the environment. Production moves this behind
+ * the same durable store as everything else, because `tryAssign` has to be a
+ * conditional write to be safe under concurrent signups.
+ */
+const pools: PoolStore = new InMemoryPoolStore(
+  JSON.parse(process.env.VON_POOLS ?? "[]") as Array<{
+    projectId: string;
+    used: number;
+    capacity: number;
+    accepting: boolean;
+  }>,
+);
 
 /**
  * Wire the provisioning plan to real credentials.
@@ -40,8 +59,17 @@ function deps(): GenesisDeps {
       auth: { accessToken: async () => need("GOOGLE_ACCESS_TOKEN") },
       parent: need("GCP_PARENT"),
       billingAccount: need("GCP_BILLING_ACCOUNT"),
-      poolProjectId: need("VON_POOL_PROJECT_ID"),
-      poolWebConfig: JSON.parse(need("VON_POOL_WEB_CONFIG")),
+      // Web config per pool project. Pools are separate Firebase projects, so
+      // each has its own; the map is seeded when a pool is provisioned.
+      poolWebConfig: (poolProjectId: string) => {
+        const all = JSON.parse(need("VON_POOL_WEB_CONFIGS")) as Record<
+          string,
+          Record<string, string>
+        >;
+        const cfg = all[poolProjectId];
+        if (!cfg) throw new Error(`no web config registered for pool ${poolProjectId}`);
+        return cfg;
+      },
       locationId: process.env.GCP_LOCATION ?? "us-central1",
     },
     github: githubCtx(),
@@ -66,8 +94,19 @@ function deps(): GenesisDeps {
 export async function startGenesis(store: Store, app: App): Promise<void> {
   const d = deps();
 
+  // Allocate a pool before the plan runs: it is a conditional write against
+  // shared capacity, and it must resolve to the same pool on every re-run.
+  const allocation =
+    app.backendTier === "pooled"
+      ? await allocatePool(pools, app.id, {
+          onLowCapacity: (free, total) =>
+            console.warn(`[pools] low capacity: ${free}/${total} slots free — provision another pool`),
+        })
+      : { projectId: "", reused: false };
+
   const input: GenesisInput = {
     appId: app.id,
+    poolProjectId: allocation.projectId,
     slug: app.slug,
     displayName: app.name,
     description: app.description,

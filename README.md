@@ -125,8 +125,8 @@ All platform-owned. Users supply none of these — that is the point.
 | `GOOGLE_ACCESS_TOKEN` | Provisioner service account (ADC in production) |
 | `GCP_PARENT` | Folder/org new projects are created under, e.g. `folders/123` |
 | `GCP_BILLING_ACCOUNT` | Billing account to attach — Blaze is required for Functions |
-| `VON_POOL_PROJECT_ID` | The shared project backing pooled apps |
-| `VON_POOL_WEB_CONFIG` | That project's Firebase web config, as JSON |
+| `VON_POOLS` | Pool registry: `[{projectId, used, capacity, accepting}]` |
+| `VON_POOL_WEB_CONFIGS` | Firebase web config per pool project, keyed by project id |
 | `GITHUB_INSTALLATION_TOKEN` | Von GitHub App installation token |
 | `VON_GITHUB_ORG` | Org that owns generated repos |
 | `VON_TEMPLATE_REPO` | `owner/repo` of the blueprint, marked as a template |
@@ -148,6 +148,7 @@ Built and tested:
 - OTA-vs-native classifier and blueprint token guard (38 tests overall)
 - streaming build agent with a scoped file-edit tool surface
 - control plane, admin console, Expo chat client
+- pool allocator — sticky per app, never overfills, warns before capacity runs out
 
 Not built yet:
 
@@ -159,8 +160,6 @@ Not built yet:
 - **Post-update checks** — watching for a crash spike on a new runtime and
   offering a rollback (EAS Update does this by republishing the prior bundle).
 - Firestore-backed store (everything is in-memory today)
-- the pool allocator that shards apps across pool projects at ~100 each
-  (bound by the Firestore database quota, not GCIP tenants)
 - pooled -> dedicated data migration
 - store submission (TestFlight / Play internal)
 

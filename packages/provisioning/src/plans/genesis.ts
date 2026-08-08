@@ -22,6 +22,13 @@ export interface GenesisInput extends Record<string, unknown> {
   backendTier: "pooled" | "dedicated";
   /** `shell` skips per-app EAS project creation. */
   deliveryMode: "shell" | "standalone";
+  /**
+   * Pool project this app was allocated to, resolved by `allocatePool` before
+   * the plan runs. Allocation is a conditional write against shared capacity,
+   * which a plan step's synchronous spec thunk cannot express — and it must be
+   * sticky across re-runs, so it belongs upstream of the plan, not inside it.
+   */
+  poolProjectId: string;
   /** Platform-owned Gemini key handed to the generated app's functions. */
   geminiApiKey: string;
   /** Expo token the generated repo's workflows use. */
@@ -33,10 +40,11 @@ export interface GenesisDeps {
     auth: GoogleAuth;
     parent: string;
     billingAccount: string;
-    /** Shared project backing every pooled app. */
-    poolProjectId: string;
-    /** Web config of the shared pool project (baked once, reused by all). */
-    poolWebConfig: Record<string, string>;
+    /**
+     * Web config of the pool project, keyed by pool project id. Pools are
+     * separate Firebase projects, so each has its own web config.
+     */
+    poolWebConfig: (poolProjectId: string) => Record<string, string>;
     locationId: string;
   };
   github: GitHubCtx;
@@ -87,7 +95,7 @@ export function genesisPlan(deps: GenesisDeps): Plan {
       when: (ctx) => !isDedicated(ctx),
       spec: (ctx) => ({
         appId: input(ctx).appId,
-        poolProjectId: deps.google.poolProjectId,
+        poolProjectId: input(ctx).poolProjectId,
         displayName: input(ctx).appId,
       }),
     },
@@ -128,7 +136,7 @@ export function genesisPlan(deps: GenesisDeps): Plan {
         appId: input(ctx).appId,
         projectId: isDedicated(ctx)
           ? (ctx.outputs.firebaseProject!.projectId as string)
-          : deps.google.poolProjectId,
+          : input(ctx).poolProjectId,
         locationId: deps.google.locationId,
         databaseId: isDedicated(ctx) ? "(default)" : databaseIdFor(input(ctx).appId),
       }),
@@ -259,7 +267,7 @@ export function resolveRuntimeConfig(ctx: PlanContext, deps: GenesisDeps): Runti
   return {
     appId: input(ctx).appId,
     backendTier: "pooled",
-    firebase: firebase(deps.google.poolWebConfig),
+    firebase: firebase(deps.google.poolWebConfig(input(ctx).poolProjectId)),
     gcipTenantId: tenantId,
     // The app's own Firestore database inside the pool project: its own
     // indexes, its own rules, its own backups.
