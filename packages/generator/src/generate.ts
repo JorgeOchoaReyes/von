@@ -1,0 +1,90 @@
+/**
+ * Blueprint -> per-app repo.
+ *
+ * The blueprint is the ByteLearning stack with every app-specific value pulled
+ * out into a `{{TOKEN}}`. Reading the reference implementation, these are the
+ * values that were hardcoded and therefore had to become parameters:
+ *
+ *   apps/expo/app.json          extra.eas.projectId, name, slug, scheme, bundleIdentifier, package
+ *   apps/expo/src/lib/firebase.ts  the whole firebaseConfig object (now fetched at runtime)
+ *   .github/workflows/*.yml     FIREBASE_PROJECT, branch triggers
+ *
+ * Anything still hardcoded after generation is a per-app value that leaked, and
+ * will eventually cause one tenant's app to talk to another tenant's backend.
+ * `assertNoUnresolvedTokens` is the guard.
+ */
+
+export interface BlueprintVars extends Record<string, string> {
+  APP_NAME: string;
+  APP_SLUG: string;
+  APP_ID: string;
+  BUNDLE_ID: string;
+  SCHEME: string;
+  CHANNEL: string;
+  DEFAULT_BRANCH: string;
+  EAS_PROJECT_ID: string;
+  FIREBASE_PROJECT_ID: string;
+  /** Control-plane URL the app fetches its runtime config from. */
+  VON_API_URL: string;
+}
+
+const TOKEN = /\{\{([A-Z_]+)\}\}/g;
+
+export function render(template: string, vars: BlueprintVars): string {
+  return template.replace(TOKEN, (match, name: string) => {
+    const value = vars[name];
+    if (value === undefined) return match; // leave it; the assert below catches it
+    return value;
+  });
+}
+
+export interface GeneratedFile {
+  path: string;
+  contents: string;
+}
+
+export function generateRepo(
+  blueprint: Record<string, string>,
+  vars: BlueprintVars,
+): GeneratedFile[] {
+  return Object.entries(blueprint).map(([path, contents]) => ({
+    path: render(path, vars),
+    contents: render(contents, vars),
+  }));
+}
+
+export interface UnresolvedToken {
+  path: string;
+  token: string;
+  line: number;
+}
+
+/**
+ * Fail the generation rather than push a repo with an unsubstituted token.
+ *
+ * A leftover `{{FIREBASE_PROJECT_ID}}` in a workflow is not a cosmetic bug: the
+ * deploy would either fail loudly or, worse, target whatever project the literal
+ * string happens to resolve to.
+ */
+export function assertNoUnresolvedTokens(files: GeneratedFile[]): void {
+  const found: UnresolvedToken[] = [];
+
+  for (const file of files) {
+    file.contents.split("\n").forEach((line, i) => {
+      for (const match of line.matchAll(TOKEN)) {
+        found.push({ path: file.path, token: match[0], line: i + 1 });
+      }
+    });
+  }
+
+  if (found.length > 0) {
+    const detail = found
+      .slice(0, 10)
+      .map((f) => `  ${f.path}:${f.line} ${f.token}`)
+      .join("\n");
+    throw new Error(
+      `Blueprint has ${found.length} unresolved token(s):\n${detail}` +
+        (found.length > 10 ? `\n  … and ${found.length - 10} more` : ""),
+    );
+  }
+}

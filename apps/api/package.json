@@ -1,0 +1,20 @@
+{
+  "name": "@von/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --experimental-strip-types --watch src/main.ts",
+    "start": "node --experimental-strip-types src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@von/agent": "workspace:*",
+    "@von/core": "workspace:*",
+    "@von/provisioning": "workspace:*",
+    "@von/release": "workspace:*",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": { "typescript": "^5.7.2" }
+}

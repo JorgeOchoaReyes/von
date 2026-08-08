@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "Von",
+    "slug": "von-chat",
+    "scheme": "von",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "assetBundlePatterns": ["**/*"],
+    "ios": { "supportsTablet": true, "bundleIdentifier": "app.von.chat" },
+    "android": { "package": "app.von.chat" },
+    "web": { "bundler": "metro" },
+    "plugins": ["expo-router"],
+    "experiments": { "typedRoutes": true },
+    "runtimeVersion": { "policy": "appVersion" },
+    "updates": { "url": "https://u.expo.dev/REPLACED_AT_PROVISION_TIME" },
+    "extra": { "eas": { "projectId": "REPLACED_AT_PROVISION_TIME" } }
+  }
+}

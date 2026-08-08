@@ -1,0 +1,39 @@
+name: Deploy Firestore Rules
+
+# Publishes firestore.rules and indexes. The reference implementation required
+# pasting rules into the Firebase console by hand (DEPLOY.md §1), which meant
+# the deployed rules could silently drift from the ones in the repo.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["{{DEFAULT_BRANCH}}"]
+    paths:
+      - "firestore.rules"
+      - "firestore.indexes.json"
+      - "firebase.json"
+      - ".github/workflows/deploy-firestore-rules.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      FIREBASE_PROJECT: "{{FIREBASE_PROJECT_ID}}"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Deploy rules and indexes
+        run: |
+          npx --yes firebase-tools deploy \
+            --only firestore:rules,firestore:indexes \
+            --project "$FIREBASE_PROJECT" \
+            --non-interactive --force
