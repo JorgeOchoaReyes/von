@@ -25,14 +25,18 @@
  */
 export const PROD_BRANCH = "master";
 
-export interface BlueprintVars extends Record<string, string> {
+// Indexed by `string | undefined` so a token lookup for a key the caller never
+// supplied is expressible; `render` leaves those in place for
+// `assertNoUnresolvedTokens` to catch rather than emitting "undefined".
+export interface BlueprintVars extends Record<string, string | undefined> {
   APP_NAME: string;
   APP_SLUG: string;
   APP_ID: string;
   BUNDLE_ID: string;
   SCHEME: string;
   CHANNEL: string;
-  DEFAULT_BRANCH: string;
+  /** Defaults to `PROD_BRANCH`; supply only to override the convention. */
+  DEFAULT_BRANCH?: string;
   EAS_PROJECT_ID: string;
   FIREBASE_PROJECT_ID: string;
   /** Control-plane URL the app fetches its runtime config from. */
@@ -61,7 +65,15 @@ export function generateRepo(
   // DEFAULT_BRANCH is a platform convention, not a per-app choice, so callers
   // do not have to supply it and cannot accidentally diverge from the branch
   // the generated workflows actually trigger on.
-  const resolved: BlueprintVars = { DEFAULT_BRANCH: PROD_BRANCH, ...vars };
+  //
+  // Written as an explicit `??` rather than `{DEFAULT_BRANCH: PROD_BRANCH, ...vars}`:
+  // spreading last overwrites the default with `undefined` when the caller omits
+  // the key, which would emit an empty branch trigger and silently disable every
+  // workflow in the generated repo.
+  const resolved: BlueprintVars = {
+    ...vars,
+    DEFAULT_BRANCH: vars.DEFAULT_BRANCH ?? PROD_BRANCH,
+  };
   return Object.entries(blueprint).map(([path, contents]) => ({
     path: render(path, resolved),
     contents: render(contents, resolved),

@@ -60,3 +60,15 @@ test("an explicit branch still wins over the default", () => {
   const files = generateRepo({ "w.yml": "{{DEFAULT_BRANCH}}" }, { ...vars, DEFAULT_BRANCH: "main" });
   assert.equal(files[0]!.contents, "main");
 });
+
+test("an explicitly-undefined branch still falls back to master", () => {
+  // The spread-order bug: {DEFAULT_BRANCH: PROD_BRANCH, ...vars} would emit an
+  // empty trigger here, silently disabling every workflow in the generated repo.
+  const files = generateRepo(
+    { "w.yml": 'branches: ["{{DEFAULT_BRANCH}}"]' },
+    { ...vars, DEFAULT_BRANCH: undefined },
+  );
+  assert.doesNotThrow(() => assertNoUnresolvedTokens(files));
+  assert.match(files[0]!.contents, /branches: \["master"\]/);
+  assert.equal(PROD_BRANCH, "master");
+});
