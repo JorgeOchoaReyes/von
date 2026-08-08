@@ -41,11 +41,17 @@ through the same pipeline it sells.
 ## The three ideas worth knowing
 
 **1. Apps are pooled by default, dedicated on publish.**
-A new app gets a GCIP tenant inside a shared Firebase project plus a Firestore
-path prefix — isolated auth and data, provisioned in about a second, consuming
-no GCP project quota. It only gets a real Firebase project when it is published
-or upgraded. This is what makes "describe it, use it" possible, and what stops
-project quota from being the ceiling on signups.
+A new app gets, inside a shared Firebase project, its own GCIP tenant (its own
+user pool — app A's users cannot sign into app B) and its own named Firestore
+database (its own indexes, rules, backups, throughput). Provisioned in seconds,
+consuming no GCP project quota. It only gets a real Firebase project when it is
+published or upgraded. This is what makes "describe it, use it" possible, and
+what stops project quota from being the ceiling on signups.
+
+A database per app rather than a path prefix in a shared one is the difference
+between isolated and merely namespaced: composite indexes cap at ~200 *per
+database*, one rules file governs a whole database, and backup granularity is
+the database. Sharing one makes every app's data model everyone else's problem.
 
 **2. Backend config is fetched at runtime, not baked into the bundle.**
 The reference implementation hardcodes the Firebase web config in
@@ -110,7 +116,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier (9 tests) and blueprint token guard (4 tests)
+- OTA-vs-native classifier and blueprint token guard (38 tests overall)
 - streaming build agent with a scoped file-edit tool surface
 - control plane, admin console, Expo chat client
 
@@ -124,7 +130,8 @@ Not built yet:
 - **Post-update checks** — watching for a crash spike on a new runtime and
   offering a rollback (EAS Update does this by republishing the prior bundle).
 - Firestore-backed store (everything is in-memory today)
-- the pool allocator that shards apps across pool projects at ~1000 each
+- the pool allocator that shards apps across pool projects at ~100 each
+  (bound by the Firestore database quota, not GCIP tenants)
 - pooled -> dedicated data migration
 - store submission (TestFlight / Play internal)
 
