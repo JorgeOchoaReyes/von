@@ -5,6 +5,7 @@ import {
   runPlan,
   type GenesisDeps,
   type GenesisInput,
+  type GitHubCtx,
   type PlanContext,
 } from "@von/provisioning";
 import type { Store } from "./store.ts";
@@ -16,13 +17,22 @@ import type { Store } from "./store.ts";
  * none of it. That is the whole point: "type a description, get an app" cannot
  * survive an OAuth detour and a credit-card form (docs/ARCHITECTURE.md §1).
  */
-function deps(): GenesisDeps {
-  const need = (name: string): string => {
-    const v = process.env[name];
-    if (!v) throw new Error(`missing env ${name}`);
-    return v;
-  };
+const need = (name: string): string => {
+  const v = process.env[name];
+  if (!v) throw new Error(`missing env ${name}`);
+  return v;
+};
 
+/** GitHub context, shared by provisioning and by the update path. */
+export function githubCtx(): GitHubCtx {
+  return {
+    token: async () => need("GITHUB_INSTALLATION_TOKEN"),
+    org: need("VON_GITHUB_ORG"),
+    templateRepo: need("VON_TEMPLATE_REPO"),
+  };
+}
+
+function deps(): GenesisDeps {
   return {
     google: {
       // Short-lived token from the platform's provisioner service account.
@@ -34,11 +44,7 @@ function deps(): GenesisDeps {
       poolWebConfig: JSON.parse(need("VON_POOL_WEB_CONFIG")),
       locationId: process.env.GCP_LOCATION ?? "us-central1",
     },
-    github: {
-      token: async () => need("GITHUB_INSTALLATION_TOKEN"),
-      org: need("VON_GITHUB_ORG"),
-      templateRepo: need("VON_TEMPLATE_REPO"),
-    },
+    github: githubCtx(),
     eas: {
       token: async () => need("EXPO_TOKEN"),
       accountId: need("EXPO_ACCOUNT_ID"),

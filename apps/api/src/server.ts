@@ -2,15 +2,20 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { newRunId } from "@von/core";
-import { InMemoryWorkspace, runAgent } from "@von/agent";
 import { classifyChange } from "@von/release";
 import { createStore } from "./store.ts";
-import { startGenesis } from "./provision.ts";
+import { githubCtx, startGenesis } from "./provision.ts";
+import { updateApp } from "./update.ts";
+import { updateRoutes } from "./routes-update.ts";
 
 const store = createStore();
 const app = new Hono();
 
 app.use("*", cors());
+
+// The direct (non-chat) make-and-update surface: POST /v1/apps/:id/update and
+// POST /v1/fleet/update. Same code path as chat, no conversation required.
+app.route("/", updateRoutes(store, githubCtx));
 
 app.get("/healthz", (c) => c.json({ ok: true }));
 
@@ -81,37 +86,34 @@ app.post("/v1/apps/:id/chat", async (c) => {
   const runId = newRunId();
 
   return streamSSE(c, async (stream) => {
-    const workspace = new InMemoryWorkspace(); // git-backed checkout in production
-    const summary = `You are editing "${target.name}" (${target.id}).\n${target.description}`;
-
     await stream.writeSSE({ event: "run.start", data: JSON.stringify({ runId }) });
 
     try {
-      for await (const ev of runAgent({
-        workspace,
-        message,
-        appSummary: summary,
-        backendTier: target.backendTier,
-      })) {
-        if (ev.type === "text") {
-          await stream.writeSSE({ event: "text", data: JSON.stringify({ text: ev.text }) });
-        } else if (ev.type === "tool") {
-          await stream.writeSSE({ event: "tool", data: JSON.stringify(ev.tool) });
-        } else if (ev.type === "error") {
-          await stream.writeSSE({ event: "error", data: JSON.stringify({ message: ev.text }) });
-        } else if (ev.type === "done" && ev.decision) {
-          // The routing decision is part of the product surface: the user is
-          // told whether this lands in a minute or needs a new build.
-          await stream.writeSSE({
-            event: "release",
-            data: JSON.stringify({
-              kind: ev.decision.kind,
-              reason: ev.decision.reason,
-              files: workspace.changedFiles(),
-            }),
-          });
-        }
-      }
+      // Same path the REST and fleet surfaces use — chat only adds streaming.
+      const result = await updateApp(store, target, githubCtx(), {
+        instruction: message,
+        onEvent: (ev) => {
+          // Fire-and-forget: the agent generator must not stall on the socket.
+          if (ev.type === "text") {
+            void stream.writeSSE({ event: "text", data: JSON.stringify({ text: ev.text }) });
+          } else if (ev.type === "tool") {
+            void stream.writeSSE({ event: "tool", data: JSON.stringify(ev.tool) });
+          } else if (ev.type === "error") {
+            void stream.writeSSE({ event: "error", data: JSON.stringify({ message: ev.text }) });
+          }
+        },
+      });
+
+      // The routing decision is part of the product surface: the user is told
+      // whether this lands in a minute or needs a new build.
+      await stream.writeSSE({
+        event: "release",
+        data: JSON.stringify({
+          kind: result.ship?.decision.kind ?? "none",
+          reason: result.summary,
+          commit: result.commitSha,
+        }),
+      });
     } catch (err) {
       await stream.writeSSE({
         event: "error",

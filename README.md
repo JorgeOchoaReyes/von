@@ -69,6 +69,35 @@ the app on a device you cannot reach.
 
 ---
 
+## Making and updating apps
+
+One code path — `apps/api/src/update.ts` — backs all three surfaces, so how an
+instruction becomes a change on someone's phone is defined in exactly one place:
+
+```
+clone -> agent edits -> commit & push -> classify the real git diff ->
+dispatch OTA or build -> record the runtime version
+```
+
+| Surface | How |
+|---|---|
+| Chat | `POST /v1/apps/:id/chat` — the same path, streamed over SSE |
+| One app, no chat | `POST /v1/apps/:id/update` with `{"instruction": "..."}` |
+| Every app | `POST /v1/fleet/update` with `{"instruction": "...", "dryRun": true}` first |
+
+The fleet route is how a blueprint fix or dependency bump reaches apps that
+already exist — the template only shapes apps created *after* it changed, so
+without it every existing app silently drifts. It bounds concurrency (providers
+rate-limit per installation), isolates per-app failures, and aborts after 5
+failures rather than repeating a systemic error across the whole fleet.
+
+It classifies the diff **git** reports, not the paths the agent claims it
+touched: an agent that rewrites a file with identical content reports a change
+where git does not, and trusting it would ship empty releases and bump runtime
+versions for nothing — invalidating every installed build's OTA channel.
+
+---
+
 ## Running it
 
 ```bash

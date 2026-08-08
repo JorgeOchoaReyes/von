@@ -54,6 +54,9 @@ importers:
       '@von/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@von/generator':
+        specifier: workspace:*
+        version: link:../../packages/generator
       '@von/provisioning':
         specifier: workspace:*
         version: link:../../packages/provisioning
