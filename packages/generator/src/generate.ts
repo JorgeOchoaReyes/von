@@ -14,6 +14,17 @@
  * `assertNoUnresolvedTokens` is the guard.
  */
 
+/**
+ * Production branch for every generated app.
+ *
+ * `master`, matching ByteLearning and this repo, so the branch a workflow
+ * deploys from is the same name everywhere and there is no per-app branch
+ * convention to remember. GitHub's "generate from template" copies the
+ * template repo's default branch name, so the blueprint repo must also default
+ * to `master` for generated repos to line up with the workflow triggers.
+ */
+export const PROD_BRANCH = "master";
+
 export interface BlueprintVars extends Record<string, string> {
   APP_NAME: string;
   APP_SLUG: string;
@@ -47,9 +58,13 @@ export function generateRepo(
   blueprint: Record<string, string>,
   vars: BlueprintVars,
 ): GeneratedFile[] {
+  // DEFAULT_BRANCH is a platform convention, not a per-app choice, so callers
+  // do not have to supply it and cannot accidentally diverge from the branch
+  // the generated workflows actually trigger on.
+  const resolved: BlueprintVars = { DEFAULT_BRANCH: PROD_BRANCH, ...vars };
   return Object.entries(blueprint).map(([path, contents]) => ({
-    path: render(path, vars),
-    contents: render(contents, vars),
+    path: render(path, resolved),
+    contents: render(contents, resolved),
   }));
 }
 
