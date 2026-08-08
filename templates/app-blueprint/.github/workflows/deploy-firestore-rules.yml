@@ -1,16 +1,18 @@
 name: Deploy Firestore Rules
 
-# Publishes firestore.rules and indexes. The reference implementation required
-# pasting rules into the Firebase console by hand (DEPLOY.md §1), which meant
-# the deployed rules could silently drift from the ones in the repo.
+# Publishes firestore.rules to Firebase. Fast (no build). Uses the same
+# FIREBASE_SERVICE_ACCOUNT secret as the functions deploy.
+#
+# Templated from the ByteLearning original: branch trigger and FIREBASE_PROJECT
+# are per-app.
 
 on:
   workflow_dispatch:
   push:
-    branches: ["{{DEFAULT_BRANCH}}"]
+    branches:
+      - "{{DEFAULT_BRANCH}}"
     paths:
       - "firestore.rules"
-      - "firestore.indexes.json"
       - "firebase.json"
       - ".github/workflows/deploy-firestore-rules.yml"
 
@@ -21,19 +23,18 @@ jobs:
     env:
       FIREBASE_PROJECT: "{{FIREBASE_PROJECT_ID}}"
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - uses: google-github-actions/auth@v2
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
-      - name: Deploy rules and indexes
-        run: |
-          npx --yes firebase-tools deploy \
-            --only firestore:rules,firestore:indexes \
-            --project "$FIREBASE_PROJECT" \
-            --non-interactive --force
+      - name: Deploy Firestore rules
+        run: npx --yes firebase-tools deploy --only firestore:rules --project "$FIREBASE_PROJECT" --non-interactive

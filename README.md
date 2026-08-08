@@ -115,24 +115,39 @@ Built and tested:
 
 Not built yet:
 
-- **P3 self-verification** — running the generated app, screenshotting it, and
-  checking the result against the request. This is the largest remaining gap
-  between "the agent edited files" and "the change actually works".
+- **In-chat preview** — a web render of the changed screen for the seconds
+  before the OTA lands. Verification itself is the OTA: a JS change type-checks
+  in CI and is on the phone in about a minute, so the user confirms it in the
+  real app rather than an agent judging its own work. The preview is a
+  convenience on top of that, not a replacement.
+- **Post-update checks** — watching for a crash spike on a new runtime and
+  offering a rollback (EAS Update does this by republishing the prior bundle).
 - Firestore-backed store (everything is in-memory today)
 - the pool allocator that shards apps across pool projects at ~1000 each
 - pooled -> dedicated data migration
 - store submission (TestFlight / Play internal)
 
-### Gaps found in the reference implementation
+### Relationship to ByteLearning
 
-Read from `JorgeOchoaReyes/ByteLearning@b47307d`. These are carried as fixes in
-the blueprint, not criticisms — they are the difference between one app and many:
+Read from branch `claude/old-project-review-auhe7k` — **not `master`**, which is
+several versions behind (0.1.0 vs 0.5.0) and is missing most of the pipeline.
 
-- `expo-updates` is not installed and `runtimeVersion` is not set, so **OTA does
-  not actually work yet** despite being central to the brief. There is no
-  `eas-update.yml`. Both are added here.
-- No `deploy-firestore-rules.yml`; rules are pasted into the console by hand, so
-  deployed rules can drift from the repo. Added here.
-- Workflow triggers hardcode a working branch, and `FIREBASE_PROJECT` hardcodes
-  `byte-learning-67778`. Both templated.
+The OTA path is complete and proven there: `expo-updates` installed,
+`runtimeVersion: { policy: "appVersion" }`, an `updates.url`, per-profile
+channels in `eas.json`, and both `eas-update.yml` and
+`deploy-firestore-rules.yml` working. The blueprint uses those workflows
+essentially verbatim.
+
+What changes is only what has to be per-app:
+
+- **The Firebase web config is baked into the bundle** (`byte-learning-67778`
+  hardcoded as an env fallback in `apps/expo/src/lib/firebase.ts`). Right for one
+  app, fatal for a platform — it becomes a runtime fetch.
+- Workflow branch triggers and `FIREBASE_PROJECT` are hardcoded; both templated.
+- Channels are profile-named; with a shared shell binary the channel is the only
+  separation between tenants' bundles, so it is derived from the app id.
 - CI runs Node 18 while deploys run Node 20. Standardised on 20.
+
+One thing added: a type-check gate in `eas-update.yml` before publishing. In
+ByteLearning a human wrote and reviewed the diff first; here an agent wrote it,
+and OTA reaches devices with no review step in between.

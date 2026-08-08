@@ -234,22 +234,60 @@ bundle from ever landing on an old binary.
 | Install APK to see a native change | **Removed for Tier 0** — shell app + channel; native only on publish |
 | Paste API keys / credentials | **Automated** — `github.secret` driver seals and uploads |
 | Trigger deploy and watch it | **Automated** — `dispatchWorkflow` + run polling |
-| Eyeball whether it works | *Open* — P3 self-verification is not built here |
+| Eyeball whether it works | **Mostly closed by the OTA loop** — see below |
 | Hand-write schema/functions/rules | *Partial* — blueprint ships a working set; generation is P4 |
+
+### Verification is the OTA update
+
+The fast feedback loop is not a screenshot harness — it is the update itself.
+A JS/asset change type-checks in CI and is on the user's phone in about a
+minute, so *they* verify it, in the real app, on the real device, against what
+they actually meant. That is both cheaper and more truthful than an agent
+deciding its own change looked right.
+
+This is why the classifier's bias matters so much (§8): every change it can
+honestly route to OTA is a change the user confirms in a minute instead of ten,
+and the whole loop stays conversational.
+
+Two things still worth building on top of it:
+
+- **An in-chat preview** for the seconds before the OTA lands — a web render of
+  the changed screen, so the user sees something immediately. A convenience, not
+  a replacement: the OTA is what proves it works on-device.
+- **Automated post-update checks** — the agent watching for a crash spike or a
+  failed launch on the new runtime and offering a rollback, which EAS Update
+  supports natively by republishing the previous bundle to the channel.
 
 ---
 
-## 10. Known gaps in the reference implementation, carried into the blueprint
+## 10. What the blueprint changes, and what it keeps
 
-Read from `JorgeOchoaReyes/ByteLearning@b47307d`:
+Read from `JorgeOchoaReyes/ByteLearning`, branch `claude/old-project-review-auhe7k`
+(**not** `master`, which is several versions behind at 0.1.0 vs 0.5.0).
 
-- **`expo-updates` is not installed and `runtimeVersion` is not set in
-  `app.json`.** OTA is described in the brief but is not actually wired — there
-  is no `eas-update.yml` workflow either. The blueprint adds both; without them
-  the entire Tier 0 delivery story does not function.
-- **`deploy-firestore-rules.yml` does not exist**, so `firestore.rules` is
-  published by hand. The blueprint adds the workflow.
-- **Workflow triggers hardcode a branch** (`claude/old-project-review-auhe7k`)
-  and `FIREBASE_PROJECT` hardcodes `byte-learning-67778`. Both are templated.
-- **CI uses Node 18 while deploys use Node 20**, and `turbo` is v1 while
-  functions target Node 20. The blueprint standardises on Node 20.
+**Already working, kept as-is.** The OTA pipeline is complete and proven:
+`expo-updates@~0.26.10` is installed, `app.json` sets
+`runtimeVersion: { policy: "appVersion" }` and an `updates.url`, `eas.json`
+assigns a `channel` per build profile, and both `eas-update.yml` and
+`deploy-firestore-rules.yml` exist and work. The blueprint uses these workflows
+essentially verbatim.
+
+**Changed, because they are per-app values that would leak across tenants:**
+
+- **The Firebase web config is baked into the bundle**
+  (`apps/expo/src/lib/firebase.ts` hardcodes `byte-learning-67778` as an env-var
+  fallback). This is correct for one app and fatal for a platform — see §4. It
+  becomes a runtime fetch.
+- **Workflow branch triggers hardcode `master` and
+  `claude/old-project-review-auhe7k`**; `FIREBASE_PROJECT` hardcodes
+  `byte-learning-67778`. Both templated.
+- **Channels are profile-named** (`development` / `preview` / `production`),
+  which is right for one app. With a shared shell binary the channel is the only
+  thing separating one tenant's bundle from another's, so it is derived from the
+  app id instead.
+- **CI runs Node 18 while every deploy workflow runs Node 20.** Standardised on
+  20, so a type error cannot pass CI and then fail at deploy.
+
+**Added:** a type-check gate in `eas-update.yml` before publishing. In
+ByteLearning a human wrote and reviewed the diff before pushing; here an agent
+wrote it, and OTA reaches devices with no review step in between.

@@ -1,61 +1,62 @@
 name: EAS Update (OTA)
 
-# Publishes a JS/asset-only change over the air. Reaches an installed build in
-# about a minute — but ONLY a build whose runtimeVersion matches, and only on
-# the channel that build was installed from. Both are decided by the platform's
-# release classifier (packages/release), which dispatches this workflow.
+# Ships JavaScript/asset changes over-the-air to installed builds — no native
+# rebuild. Only native-affecting changes (deps, app config) need the APK
+# workflow. Requires the EXPO_TOKEN secret; installed builds must have been made
+# with expo-updates configured (channel set in eas.json).
 #
-# The reference implementation had no OTA workflow at all, so every change
-# required a full rebuild. This is what makes Tier 0 delivery possible.
+# Templated from the ByteLearning original: the branch trigger and the default
+# channel are per-app, so the platform's release classifier can dispatch this
+# against the right channel for the build the user actually installed.
 
 on:
   workflow_dispatch:
     inputs:
-      channel:
-        description: "EAS Update channel — must match the installed build"
+      branch:
+        description: "EAS Update branch (matches the build channel)"
         type: string
-        required: true
-      message:
-        description: "Update message shown in the EAS dashboard"
-        type: string
-        default: "Update from Von"
+        default: "{{CHANNEL}}"
   push:
-    branches: ["{{DEFAULT_BRANCH}}"]
+    branches:
+      - "{{DEFAULT_BRANCH}}"
     paths:
       - "apps/expo/app/**"
       - "apps/expo/src/**"
       - "apps/expo/assets/**"
-      - "packages/**"
+      - "packages/firebase/**"
 
 jobs:
   update:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
 
-      - uses: expo/expo-github-action@v8
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - run: pnpm install --frozen-lockfile
+      - name: Install dependencies
+        run: pnpm install
 
-      # Type-check before publishing. An OTA update reaches devices with no
-      # review step, so this is the last gate before it is on real phones.
-      - run: pnpm turbo type-check
+      # Added on top of the ByteLearning original. An OTA update reaches
+      # installed builds with no review step, and here the diff was written by
+      # an agent, so this is the last gate before it is on a real phone.
+      - name: Type-check before publishing
+        run: pnpm turbo type-check
 
-      - name: Publish update
+      - name: Publish OTA update
         working-directory: apps/expo
-        run: |
-          eas update \
-            --branch "${{ inputs.channel || '{{CHANNEL}}' }}" \
-            --message "${{ inputs.message || github.event.head_commit.message }}" \
-            --non-interactive
+        run: eas update --branch "${{ inputs.branch || '{{CHANNEL}}' }}" --message "CI update ${{ github.sha }}" --non-interactive

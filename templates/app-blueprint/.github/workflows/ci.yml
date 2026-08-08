@@ -1,0 +1,38 @@
+name: CI
+
+# Build, lint and type-check. Templated from the ByteLearning original with the
+# Node version raised 18 -> 20 so CI matches the deploy workflows and the
+# functions runtime (they were inconsistent, which lets a type error pass CI and
+# then fail at deploy).
+
+on:
+  pull_request:
+    branches: ["*"]
+  push:
+    branches: ["{{DEFAULT_BRANCH}}"]
+
+env:
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
+
+jobs:
+  build-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install deps
+        run: pnpm install
+
+      - name: Build, lint and type-check
+        run: pnpm turbo build lint type-check
