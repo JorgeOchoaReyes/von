@@ -88,6 +88,12 @@ seconds to boot and every turn after it fast-refreshes in place. Sessions are
 capped and swept on idle — each one is a customer's repo on disk plus a
 process.
 
+Each session is served at its own origin, `<token>.$VON_PREVIEW_HOST`, proxied
+to its loopback port (including the WebSocket upgrade, which is what makes fast
+refresh work). An origin rather than a path prefix because Metro serves
+root-absolute URLs that no prefix rewrite survives — and because separate
+origins keep one customer's previewed code from reading another's.
+
 | Surface | How |
 |---|---|
 | Chat | `POST /v1/apps/:id/chat` — streams the turn, ends in a preview |
@@ -144,7 +150,7 @@ All platform-owned. Users supply none of these — that is the point.
 | `VON_TEMPLATE_REPO` | `owner/repo` of the blueprint, marked as a template |
 | `EXPO_TOKEN` / `EXPO_ACCOUNT_ID` / `EXPO_ACCOUNT_NAME` | Platform's Expo org |
 | `GEMINI_API_KEY` | Handed to generated apps' Cloud Functions |
-| `VON_PREVIEW_BASE` | Public base URL of the preview proxy; without it previews are loopback-only |
+| `VON_PREVIEW_HOST` | Wildcard preview host, e.g. `preview.von.app`; without it previews are loopback-only |
 | `VON_SHELL_EAS_PROJECT_ID` | *Optional.* Only needed if an app asks for shell delivery |
 
 ---
@@ -162,14 +168,17 @@ Built and tested:
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
+- preview proxy — per-session origin, token-addressed, WebSocket upgrades for
+  fast refresh
 - control plane, admin console, Expo chat client
 - pool allocator — sticky per app, never overfills, warns before capacity runs out
 
 Not built yet:
 
-- **A preview proxy.** Sessions serve on a loopback port; reaching one from a
-  phone needs a public host mapped to that port (`VON_PREVIEW_BASE`). Until
-  then previews work on the machine running the control plane.
+- **Wildcard DNS and a certificate for `VON_PREVIEW_HOST`.** The proxy is
+  built; it needs `*.preview.<domain>` pointed at the control plane. Without it
+  previews stay loopback-only, which works on the machine running the control
+  plane and nowhere else.
 - **Post-update checks** — watching for a crash spike on a new runtime and
   offering a rollback (EAS Update does this by republishing the prior bundle).
 - Firestore-backed store (everything is in-memory today)

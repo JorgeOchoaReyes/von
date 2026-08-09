@@ -36,13 +36,13 @@ test("the runner waits for the server to answer before handing back a URL", asyn
     // A webview pointed at a not-yet-listening Metro shows a connection error
     // and does not retry, so readiness has to be established here.
     probe: async () => ++probes >= 3,
-    urlFor: (port, appId) => `https://preview.von.app/${appId}/${port}`,
   });
 
   const running = await runner.start("/tmp/repo", { appId: "app_1" });
 
   assert.equal(probes, 3);
-  assert.match(running.url, /^https:\/\/preview\.von\.app\/app_1\/\d+$/);
+  assert.equal(running.url, `http://127.0.0.1:${running.port}`);
+  assert.ok(running.port > 0);
 });
 
 test("the preview serves the Expo app inside the checkout, not the repo root", async () => {

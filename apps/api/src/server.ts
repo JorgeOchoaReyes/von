@@ -7,6 +7,7 @@ import { createStore } from "./store.ts";
 import { githubCtx, startGenesis } from "./provision.ts";
 import { previewChange } from "./update.ts";
 import { createPreviewSessions, startPreviewSweeper } from "./preview.ts";
+import { previewProxy } from "./proxy.ts";
 import { updateRoutes } from "./routes-update.ts";
 
 const store = createStore();
@@ -14,6 +15,21 @@ const sessions = createPreviewSessions(store, githubCtx);
 startPreviewSweeper(sessions);
 
 const app = new Hono();
+
+/**
+ * Preview traffic first, before anything else looks at the path.
+ *
+ * A request to `<token>.preview.von.app` carries the *generated app's* path —
+ * `/index.bundle`, `/assets/…` — which must never be matched against the
+ * control plane's routes. Requests to the control plane's own host fall
+ * through untouched.
+ */
+const proxyPreview = previewProxy(sessions);
+app.use("*", async (c, next) => {
+  const proxied = await proxyPreview(c.req.raw);
+  if (proxied) return proxied;
+  await next();
+});
 
 app.use("*", cors());
 
@@ -143,4 +159,4 @@ app.post("/v1/apps/:id/classify", async (c) => {
 });
 
 export default app;
-export { store };
+export { store, sessions };

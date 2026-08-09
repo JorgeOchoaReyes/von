@@ -517,7 +517,32 @@ status` would report a clean tree and classify every publish as a no-op. The
 pending change is cleared only after the dispatch succeeds, so a failed dispatch
 leaves the change republishable rather than committed-but-never-shipped.
 
-What is left to build: a **preview proxy**. Sessions serve on a loopback port,
-which is right for the machine running the control plane and useless for a
-phone. `VON_PREVIEW_BASE` is the hook — a public host that maps a session's
-path to its port.
+### Reaching a preview from a device
+
+A session's dev server binds to a loopback port. To reach it from a phone, each
+session is published at **its own origin** — `<token>.preview.von.app` — which
+the control plane proxies to that port.
+
+An origin per session, not a path prefix, and the reason is not cosmetic. Metro
+serves an index full of root-absolute references (`/index.bundle`,
+`/node_modules/...`, the HMR socket); under a prefix like `/p/<token>/` every
+one of them breaks, and `<base href>` does not fix root-absolute URLs. Giving a
+session a whole origin makes the proxy a pure pass-through — the app is served
+exactly as it would be on its own.
+
+It gets the security boundary right for free. Separate origins mean one
+customer's previewed code cannot read another's, and none of it can read the
+control plane's. The subdomain label *is* the credential: 128 bits of
+randomness, issued per session, dropped when the session closes, so a stale URL
+stops resolving rather than landing on whatever now occupies that port. An
+unknown token and an expired one get the same 404, because a distinguishable
+answer confirms which tokens exist.
+
+WebSocket upgrades are piped raw rather than re-issued through `fetch`, which
+cannot express an upgrade. Without that the preview loads once and never
+changes — fast refresh is the whole reason it feels instant after the first
+turn.
+
+What is left is operational, not code: `*.preview.<domain>` has to resolve to
+the control plane, with a wildcard certificate. `VON_PREVIEW_HOST` turns it on;
+unset, previews stay loopback-only and nothing is exposed.

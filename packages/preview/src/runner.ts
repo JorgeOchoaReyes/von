@@ -23,8 +23,10 @@ import { join } from "node:path";
  * file needs to know.
  */
 export interface RunningPreview {
-  /** URL a webview can load. */
+  /** Loopback URL of the dev server itself. */
   url: string;
+  /** Port it bound to. The proxy needs this; nothing outside should see it. */
+  port: number;
   stop(): Promise<void>;
 }
 
@@ -54,13 +56,6 @@ export async function freePort(): Promise<number> {
 export interface ExpoWebRunnerOptions {
   /** Path of the Expo app inside the repo. Matches the blueprint layout. */
   appDir?: string;
-  /**
-   * Turn a local port into the URL the *client* should load. The default is
-   * loopback, which only works when the viewer is on the same host. Anything
-   * real puts a reverse proxy in front and passes a function that returns the
-   * public URL for that port.
-   */
-  urlFor?: (port: number, appId: string) => string;
   /** How long to wait for Metro to answer before giving up. */
   readyTimeoutMs?: number;
   /** Test seam: replaced with a stub in tests so nothing spawns Metro. */
@@ -129,10 +124,7 @@ export class ExpoWebRunner implements PreviewRunner {
     const deadline = Date.now() + (this.opts.readyTimeoutMs ?? 120_000);
     while (Date.now() < deadline) {
       if (exited) throw new Error(exited);
-      if (await probe(local)) {
-        const urlFor = this.opts.urlFor ?? ((p) => `http://127.0.0.1:${p}`);
-        return { url: urlFor(port, opts.appId), stop };
-      }
+      if (await probe(local)) return { url: local, port, stop };
       await new Promise((r) => setTimeout(r, 500));
     }
 

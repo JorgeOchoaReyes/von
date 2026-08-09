@@ -1,4 +1,8 @@
+import { randomBytes } from "node:crypto";
 import type { PreviewRunner, RunningPreview } from "./runner.ts";
+
+/** 128 bits of URL-safe randomness: this token is the whole access check. */
+const defaultToken = (): string => randomBytes(16).toString("hex");
 
 /**
  * Preview sessions.
@@ -41,8 +45,18 @@ export interface PendingChange {
 export interface PreviewSession<W extends PreviewWorkspace> {
   appId: string;
   workspace: W;
+  /**
+   * Unguessable id for this session, and the only thing that authorises a
+   * request to reach it. It addresses the session instead of the app id
+   * because an app id is shared, guessable and long-lived; a preview is a
+   * running dev server on someone's half-finished code and should stop being
+   * reachable the moment the session ends.
+   */
+  token: string;
   /** Null until the preview server has been started for this session. */
   url: string | null;
+  /** Loopback port of the dev server. Internal — never in a client URL. */
+  port: number | null;
   createdAt: number;
   lastUsedAt: number;
   /** Null when the tree is clean — nothing to publish. */
@@ -59,6 +73,15 @@ export interface PreviewSessionsOptions<W extends PreviewWorkspace> {
   maxSessions?: number;
   /** Injectable clock so idle behaviour is testable without waiting. */
   now?: () => number;
+  /**
+   * The URL a client should load, given a session's token and port. The default
+   * is loopback, which is right for the machine running the control plane and
+   * useless from a phone; production passes one that points at the preview
+   * proxy.
+   */
+  publicUrl?: (s: { appId: string; token: string; port: number }) => string;
+  /** Injectable token source, so tests are deterministic. */
+  newToken?: () => string;
 }
 
 interface Entry<W extends PreviewWorkspace> {
@@ -71,6 +94,8 @@ interface Entry<W extends PreviewWorkspace> {
 export class PreviewSessions<W extends PreviewWorkspace> {
   private readonly entries = new Map<string, Entry<W>>();
   private readonly opening = new Map<string, Promise<Entry<W>>>();
+  /** token -> appId, so the proxy resolves a request in one lookup. */
+  private readonly byToken = new Map<string, string>();
   private readonly opts: PreviewSessionsOptions<W>;
 
   constructor(opts: PreviewSessionsOptions<W>) {
@@ -100,11 +125,14 @@ export class PreviewSessions<W extends PreviewWorkspace> {
     const promise = (async (): Promise<Entry<W>> => {
       await this.evictForRoom();
       const workspace = await this.opts.open(appId);
+      const token = (this.opts.newToken ?? defaultToken)();
       const entry: Entry<W> = {
         session: {
           appId,
           workspace,
+          token,
           url: null,
+          port: null,
           createdAt: this.now,
           lastUsedAt: this.now,
           pending: null,
@@ -113,6 +141,7 @@ export class PreviewSessions<W extends PreviewWorkspace> {
         starting: null,
       };
       this.entries.set(appId, entry);
+      this.byToken.set(token, appId);
       return entry;
     })();
 
@@ -144,8 +173,11 @@ export class PreviewSessions<W extends PreviewWorkspace> {
     const starting = (async () => {
       const running = await this.opts.runner.start(entry.session.workspace.path, { appId });
       entry.running = running;
-      entry.session.url = running.url;
-      return running.url;
+      entry.session.port = running.port;
+      entry.session.url = this.opts.publicUrl
+        ? this.opts.publicUrl({ appId, token: entry.session.token, port: running.port })
+        : running.url;
+      return entry.session.url;
     })();
 
     entry.starting = starting;
@@ -158,6 +190,24 @@ export class PreviewSessions<W extends PreviewWorkspace> {
 
   get(appId: string): PreviewSession<W> | null {
     return this.entries.get(appId)?.session ?? null;
+  }
+
+  /**
+   * Resolve a session from its token — how the proxy answers "which dev server
+   * does this request belong to, and is it allowed to".
+   *
+   * A lookup rather than a comparison: an unknown token finds nothing, so there
+   * is no secret being compared against and nothing to time. Closing a session
+   * drops its token, so a stale URL stops resolving rather than landing on
+   * whatever now occupies that port.
+   */
+  getByToken(token: string): PreviewSession<W> | null {
+    const appId = this.byToken.get(token);
+    if (!appId) return null;
+    const entry = this.entries.get(appId);
+    if (!entry) return null;
+    entry.session.lastUsedAt = this.now;
+    return entry.session;
   }
 
   /** Record what the working tree is holding, for the publish step to ship. */
@@ -173,6 +223,7 @@ export class PreviewSessions<W extends PreviewWorkspace> {
     const entry = this.entries.get(appId);
     if (!entry) return;
     this.entries.delete(appId);
+    this.byToken.delete(entry.session.token);
 
     // Stop first: the server has the checkout open, and on some platforms
     // deleting a directory out from under a running process is how you get a

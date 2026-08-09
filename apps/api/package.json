@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --experimental-strip-types --watch src/main.ts",
     "start": "node --experimental-strip-types src/main.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types \"test/*.test.ts\""
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
