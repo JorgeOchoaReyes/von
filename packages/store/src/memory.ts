@@ -1,5 +1,5 @@
 import { InMemoryLedger, type App, type ResourceLedger, type RuntimeConfig } from "@von/core";
-import { newApp, type Store } from "./store.ts";
+import { newApp, type NewAppInput, type Store } from "./store.ts";
 
 /**
  * In-memory store, for local development and tests.
@@ -14,11 +14,7 @@ export class InMemoryStore implements Store {
   private readonly apps = new Map<string, App>();
   private readonly configs = new Map<string, RuntimeConfig>();
 
-  async createApp(input: {
-    tenantId: string;
-    name: string;
-    description: string;
-  }): Promise<App> {
+  async createApp(input: NewAppInput): Promise<App> {
     const app = newApp(input);
     this.apps.set(app.id, app);
     return app;

@@ -9,6 +9,63 @@ request. CD (`.github/workflows/cd.yml`) deploys the control plane and the
 console to Cloud Run when CI passes on `master`. CD only fires on a *successful*
 CI run, so a red commit never reaches production.
 
+**Start with §0** — it needs two tokens and exercises the product loop. The
+rest of this document is what the platform needs to *create* apps from nothing.
+
+---
+
+## 0. Try the loop first, with two tokens
+
+Before any of the below, you can exercise the part that *is* the product —
+chat → agent edit → preview → publish — against a repository that already
+exists. It needs `ANTHROPIC_API_KEY` and `GITHUB_INSTALLATION_TOKEN`, and
+nothing else: no billing account, no Expo org, no DNS.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export GITHUB_INSTALLATION_TOKEN=ghs_...
+pnpm --filter @von/api dev
+```
+
+Create an app that **adopts** a repo instead of provisioning one. Point it at a
+clone of the blueprint, or any Expo app laid out with the app under `apps/expo`:
+
+```bash
+curl -s -X POST localhost:8787/v1/apps -H 'content-type: application/json' \
+  -d '{"name":"Trial","repoFullName":"your-org/your-expo-app"}'
+```
+
+Then drive the loop:
+
+```bash
+# 1. Edit and preview — commits nothing, ships nothing.
+curl -s -X POST localhost:8787/v1/apps/$APP/chat \
+  -H 'content-type: application/json' -d '{"message":"add a settings screen"}'
+
+# 2. Look at it. The chat response carries the preview URL.
+curl -s localhost:8787/v1/apps/$APP/preview
+
+# 3. Reject it...
+curl -s -X DELETE localhost:8787/v1/apps/$APP/preview
+# ...or ship it. This is the only call that pushes and dispatches a release.
+curl -s -X POST localhost:8787/v1/apps/$APP/publish
+```
+
+The first turn takes a minute or so — the session clones the repo and installs
+its dependencies before Metro starts. Every turn after that fast-refreshes.
+
+Publishing needs the repository's own workflows (`eas-update.yml` and friends)
+and its `EXPO_TOKEN` secret to be in place, so with only these two tokens the
+publish step dispatches and then fails inside the repo's Actions. Everything up
+to and including the commit and push is real.
+
+**`GET /v1/readiness` tells you where you are** at any point — which
+capabilities are configured, and what each gap blocks:
+
+```bash
+curl -s localhost:8787/v1/readiness | jq '.blockers'
+```
+
 ---
 
 ## 1. Google Cloud
@@ -238,8 +295,20 @@ To verify by hand:
 
 ```bash
 curl -s https://<service-url>/healthz            # {"ok":true,"durable":true,...}
+
+# Every capability, and what any gap still blocks.
 curl -s -H "Authorization: Bearer $VON_API_KEY" \
-     https://<service-url>/v1/apps
+     https://<service-url>/v1/readiness | jq '{ready, blockers}'
+
+curl -s -H "Authorization: Bearer $VON_API_KEY" https://<service-url>/v1/apps
+```
+
+An app created before a credential was in place is not stranded — genesis is
+idempotent, so re-running it resumes rather than duplicating:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $VON_API_KEY" \
+     https://<service-url>/v1/apps/$APP/provision
 ```
 
 ### What runs on one instance, and why

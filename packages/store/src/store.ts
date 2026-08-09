@@ -8,6 +8,23 @@ import {
 import { COLLECTIONS, type Db } from "./db.ts";
 import { FirestoreLedger } from "./ledger.ts";
 
+/** What a caller supplies to create an app. */
+export interface NewAppInput {
+  tenantId: string;
+  name: string;
+  description: string;
+  /**
+   * Adopt an existing `owner/repo` instead of having genesis create one.
+   *
+   * The make/preview/publish loop only needs a repository it can clone and push
+   * to — none of the backend provisioning. Adopting one makes that loop
+   * testable with a GitHub token and an Anthropic key, months before there is a
+   * billing account. It is also the honest path for a customer arriving with an
+   * app they already have.
+   */
+  repoFullName?: string | null;
+}
+
 /**
  * Control-plane persistence.
  *
@@ -20,7 +37,7 @@ import { FirestoreLedger } from "./ledger.ts";
  */
 export interface Store {
   ledger: ResourceLedger;
-  createApp(input: { tenantId: string; name: string; description: string }): Promise<App>;
+  createApp(input: NewAppInput): Promise<App>;
   getApp(id: string): Promise<App | null>;
   listApps(tenantId?: string): Promise<App[]>;
   updateApp(id: string, patch: Partial<App>): Promise<App>;
@@ -29,11 +46,7 @@ export interface Store {
 }
 
 /** The shape of a brand-new app, in one place so both stores agree. */
-export function newApp(input: {
-  tenantId: string;
-  name: string;
-  description: string;
-}): App {
+export function newApp(input: NewAppInput): App {
   const now = Date.now();
   const id = newAppId();
   return {
@@ -50,7 +63,7 @@ export function newApp(input: {
     deliveryMode: "standalone",
     firebaseProjectId: null,
     gcipTenantId: null,
-    repoFullName: null,
+    repoFullName: input.repoFullName ?? null,
     easProjectId: null,
     channel: `app-${id.slice(-12)}`,
     runtimeVersion: "1.0.0",
@@ -80,11 +93,7 @@ export class FirestoreStore implements Store {
     return this.db.collection(COLLECTIONS.apps);
   }
 
-  async createApp(input: {
-    tenantId: string;
-    name: string;
-    description: string;
-  }): Promise<App> {
+  async createApp(input: NewAppInput): Promise<App> {
     const app = newApp(input);
     await this.apps.doc(app.id).set(app);
     return app;

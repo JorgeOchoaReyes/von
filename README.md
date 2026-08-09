@@ -137,10 +137,20 @@ pnpm --filter @von/admin dev    # admin console on :3000
 pnpm --filter @von/chat  dev    # Expo chat app
 ```
 
+**The fastest way to see it work** is `docs/DEPLOY.md` §0: with an Anthropic key
+and a GitHub token, create an app that *adopts* an existing repository
+(`POST /v1/apps` with `repoFullName`) and drive chat → preview → publish against
+it. That skips provisioning entirely — no billing account, no Expo org, no DNS —
+because the loop only needs a repo it can clone and push to.
+
 The control plane runs with an in-memory store, with authentication off, and
 says so on startup. Setting `VON_FIRESTORE_PROJECT` or `VON_PREVIEW_HOST` puts
 it in deployment mode, where a missing `VON_API_KEYS` is a startup error rather
 than an open door.
+
+`GET /v1/readiness` reports which capabilities are configured and what each gap
+blocks — credentials arrive in stages, and the alternative is finding out from a
+stack trace in a background task.
 
 ### Credentials for real provisioning
 
@@ -178,7 +188,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (148 tests overall)
+- OTA-vs-native classifier and blueprint token guard (159 tests overall)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
@@ -187,6 +197,8 @@ Built and tested:
 - durable Firestore persistence — apps, resource ledger, and pool assignment as
   a real conditional write
 - API-key gate that refuses to run open once deployed
+- adopt-an-existing-repo, so the product loop runs on two tokens
+- `GET /v1/readiness` — every capability, and what each missing variable blocks
 - CI on every push and pull request; CD of both services to Cloud Run on
   green `master`, with a rollback path
 - control plane, admin console, Expo chat client

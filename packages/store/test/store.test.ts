@@ -135,3 +135,25 @@ test("the ledger lists everything provisioned for one app", async () => {
   assert.equal(mine.length, 2);
   assert.ok(mine.every((r) => r.appId === "app_1"));
 });
+
+test("an app can adopt an existing repository", async () => {
+  const { store } = make();
+  const app = await store.createApp({
+    tenantId: "t",
+    name: "Adopted",
+    description: "",
+    repoFullName: "von-apps/existing",
+  });
+
+  // Adopting skips provisioning entirely: the make/preview/publish loop needs
+  // only a repo it can clone and push to, so this is the loop's cheapest path
+  // to being testable — a GitHub token and an Anthropic key, nothing else.
+  assert.equal(app.repoFullName, "von-apps/existing");
+  assert.equal((await store.getApp(app.id))!.repoFullName, "von-apps/existing");
+});
+
+test("an app created without a repository has none until genesis writes one", async () => {
+  const { store } = make();
+  const app = await store.createApp({ tenantId: "t", name: "Fresh", description: "" });
+  assert.equal(app.repoFullName, null);
+});
