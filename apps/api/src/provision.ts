@@ -1,4 +1,6 @@
 import type { App } from "@von/core";
+import { GitWorkspace } from "@von/agent";
+import { PROD_BRANCH } from "@von/generator";
 import {
   genesisPlan,
   resolveRuntimeConfig,
@@ -65,6 +67,20 @@ function deps(): GenesisDeps {
       // channel step if an app asks for shell delivery without it.
       shellProjectId: process.env.VON_SHELL_EAS_PROJECT_ID,
     },
+    // Git for the hydrate step. Injected rather than imported by the
+    // provisioning package, which has no business depending on the agent's
+    // workspace implementation.
+    hydrate: {
+      branch: PROD_BRANCH,
+      open: async (fullName: string, branch: string) => {
+        const ws = new GitWorkspace({ fullName, token: githubCtx().token, branch });
+        await ws.open();
+        return ws;
+      },
+    },
+    // Baked into every generated app as the URL it fetches its backend config
+    // from at boot, so it must be the control plane's *public* address.
+    apiUrl: need("VON_PUBLIC_URL"),
   };
 }
 

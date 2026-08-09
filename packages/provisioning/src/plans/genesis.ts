@@ -13,6 +13,7 @@ import {
 import { TerminalError } from "../driver.ts";
 import { repoDriver, repoSecretsDriver, type GitHubCtx } from "../drivers/github.ts";
 import { easChannelDriver, easProjectDriver, type EasCtx } from "../drivers/eas.ts";
+import { repoHydrateDriver, type HydrateCtx } from "../drivers/hydrate.ts";
 
 export interface GenesisInput extends Record<string, unknown> {
   appId: string;
@@ -50,6 +51,10 @@ export interface GenesisDeps {
   };
   github: GitHubCtx;
   eas: EasCtx;
+  /** Git access for the hydrate step, injected by the control plane. */
+  hydrate: HydrateCtx;
+  /** Control-plane URL the generated app fetches its runtime config from. */
+  apiUrl: string;
 }
 
 const isDedicated = (ctx: PlanContext) =>
@@ -75,10 +80,10 @@ const input = (ctx: PlanContext) => ctx.input as GenesisInput;
  *   DEPLOY.md §4.2  paste projectId into app.json  -> generator (not a step)
  *   DEPLOY.md §5.1  add EXPO_TOKEN secret          -> github.secret
  *
- * For a pooled + standalone app — the default — six steps run: `gcipTenant`,
- * `firestore`, `repo`, `easProject`, `easChannel`, `secrets`. Every step that
- * creates or bills a GCP project is skipped until the app is promoted. See
- * test/genesis.test.ts, which asserts exactly that list.
+ * For a pooled + standalone app — the default — seven steps run: `gcipTenant`,
+ * `firestore`, `repo`, `easProject`, `easChannel`, `hydrate`, `secrets`. Every
+ * step that creates or bills a GCP project is skipped until the app is
+ * promoted. See test/genesis.test.ts, which asserts exactly that list.
  */
 export function genesisPlan(deps: GenesisDeps): Plan {
   /**
@@ -218,11 +223,43 @@ export function genesisPlan(deps: GenesisDeps): Plan {
       }),
     },
 
+    // -- Parameterisation ---------------------------------------------------
+    {
+      // The template copy still says `{{APP_NAME}}` everywhere. This is the
+      // first real commit, and it runs after the EAS and backend steps because
+      // it needs the ids they produce.
+      id: "hydrate",
+      driver: repoHydrateDriver(deps.hydrate),
+      needs: ["repo", "easProject", "easChannel", "firebaseProject", "gcipTenant"],
+      spec: (ctx) => ({
+        appId: input(ctx).appId,
+        fullName: ctx.outputs.repo!.fullName as string,
+        vars: {
+          APP_NAME: input(ctx).displayName,
+          APP_SLUG: input(ctx).slug,
+          APP_ID: input(ctx).appId,
+          // Reverse-DNS from the platform's own domain: the customer does not
+          // own a domain yet, and a bundle id is immutable once published.
+          BUNDLE_ID: `app.von.${input(ctx).slug.replace(/[^a-z0-9]/g, "")}`,
+          SCHEME: input(ctx).slug,
+          CHANNEL: `app-${input(ctx).appId.slice(-12)}`,
+          EAS_PROJECT_ID:
+            (ctx.outputs.easProject?.projectId as string | undefined) ?? "",
+          // The project whose Firestore rules CI deploys: the app's own for a
+          // dedicated backend, the pool's for a pooled one.
+          FIREBASE_PROJECT_ID:
+            (ctx.outputs.firebaseProject?.projectId as string | undefined) ??
+            input(ctx).poolProjectId,
+          VON_API_URL: deps.apiUrl,
+        },
+      }),
+    },
+
     // -- Secrets (last: needs outputs from Google *and* GitHub) -------------
     {
       id: "secrets",
       driver: repoSecretsDriver(deps.github),
-      needs: ["repo", "deploySa", "easProject"],
+      needs: ["repo", "deploySa", "easProject", "hydrate"],
       spec: (ctx) => {
         const secrets: Record<string, string> = {
           GEMINI_API_KEY: input(ctx).geminiApiKey,

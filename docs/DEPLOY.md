@@ -153,8 +153,16 @@ A GitHub App owned by your org, installed on the org that will hold generated
 repositories. It needs **Contents: read & write**, **Actions: read & write**,
 **Secrets: write**, and **Administration: write** (to create repositories).
 
-Mark the blueprint repository as a **template** — genesis creates each app's
-repo with the template-generate API.
+Push `templates/app-blueprint/` from this repo to a repository of its own and
+mark it as a **template** — genesis creates each app's repo with the
+template-generate API, which copies it verbatim, tokens and all. The `hydrate`
+step then substitutes the per-app values as the repo's first real commit, and
+fails the run if any token survives.
+
+```bash
+gh repo create your-org/app-blueprint --private
+# push the contents of templates/app-blueprint to it, then mark it a template
+```
 
 > The default branch of generated repositories must be `master`, matching
 > `PROD_BRANCH`. Set it as the template's default branch; the API used here
@@ -262,6 +270,7 @@ logs, which is what you want when diagnosing a deploy:
 | `VON_PREVIEW_HOST` | `preview.example.com` |
 | `VON_GITHUB_ORG` | `von-apps` |
 | `VON_TEMPLATE_REPO` | `your-org/app-blueprint` |
+| `VON_PUBLIC_URL` | `https://api.example.com` — baked into every generated app |
 | `EXPO_ACCOUNT_ID` / `EXPO_ACCOUNT_NAME` | from Expo |
 
 Create a `production` environment (Settings → Environments) if you want a manual

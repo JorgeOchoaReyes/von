@@ -82,6 +82,13 @@ export function checkReadiness(): Readiness {
       "VON_TEMPLATE_REPO",
     ]),
 
+    // Baked into every generated app as the address it fetches its backend
+    // config from at boot. A wrong value here is not a startup failure — it is
+    // an app shipped to a phone that cannot reach its own backend.
+    capability("publicUrl", "Generated apps knowing where to fetch their config", [
+      "VON_PUBLIC_URL",
+    ]),
+
     capability(
       "google",
       "Provisioning an app's backend — GCIP tenant and Firestore database",

@@ -182,6 +182,9 @@ importers:
       '@von/core':
         specifier: workspace:*
         version: link:../core
+      '@von/generator':
+        specifier: workspace:*
+        version: link:../generator
       libsodium-wrappers:
         specifier: ^0.7.15
         version: 0.7.16

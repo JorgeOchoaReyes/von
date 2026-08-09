@@ -32,7 +32,9 @@ packages/
   store/        Durable persistence: apps, resource ledger, pool assignments.
   generator/    Blueprint -> a parameterised, per-app monorepo.
 templates/
-  app-blueprint/  The ByteLearning stack with per-app values templated out.
+  app-blueprint/  A complete Expo + Firebase monorepo with per-app values as
+                  {{TOKENS}}. Push this to its own repo and mark it a template;
+                  genesis copies it and `hydrate` substitutes the values.
 ```
 
 `apps/chat` is app #0 — it is generated from the same blueprint and shipped
@@ -163,6 +165,7 @@ are Secret Manager entries versus repository variables.
 |---|---|
 | `VON_API_KEYS` | Comma-separated keys that may call the control plane. Required once deployed |
 | `VON_FIRESTORE_PROJECT` / `VON_FIRESTORE_DATABASE` | Where the app list and resource ledger live |
+| `VON_PUBLIC_URL` | Public address of the control plane, baked into every generated app |
 | `ANTHROPIC_API_KEY` | Powers the build agent |
 | `GOOGLE_ACCESS_TOKEN` | Provisioner service account (ADC in production) |
 | `GCP_PARENT` | Folder/org new projects are created under, e.g. `folders/123` |
@@ -188,7 +191,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (159 tests overall)
+- OTA-vs-native classifier and blueprint token guard (176 tests overall)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard

@@ -92,6 +92,7 @@ jobs:
           IMAGE: ${{ steps.image.outputs.image }}
           FIRESTORE_DATABASE: ${{ vars.VON_FIRESTORE_DATABASE || 'von-control' }}
           PREVIEW_HOST: ${{ vars.VON_PREVIEW_HOST }}
+          PUBLIC_URL: ${{ vars.VON_PUBLIC_URL }}
           GITHUB_ORG: ${{ vars.VON_GITHUB_ORG }}
           TEMPLATE_REPO: ${{ vars.VON_TEMPLATE_REPO }}
           GCP_PARENT: ${{ vars.GCP_PARENT }}
@@ -108,6 +109,7 @@ jobs:
           env_vars+="VON_FIRESTORE_PROJECT=${PROJECT}"
           env_vars+="|VON_FIRESTORE_DATABASE=${FIRESTORE_DATABASE}"
           env_vars+="|VON_PREVIEW_HOST=${PREVIEW_HOST}"
+          env_vars+="|VON_PUBLIC_URL=${PUBLIC_URL}"
           env_vars+="|VON_GITHUB_ORG=${GITHUB_ORG}"
           env_vars+="|VON_TEMPLATE_REPO=${TEMPLATE_REPO}"
           env_vars+="|GCP_PARENT=${GCP_PARENT}"

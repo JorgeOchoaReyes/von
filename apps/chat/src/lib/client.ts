@@ -5,6 +5,30 @@ export const API_URL: string =
   process.env.EXPO_PUBLIC_VON_API_URL ??
   "http://localhost:8787";
 
+/**
+ * The client's key for the control plane.
+ *
+ * Every call below creates or changes something billable, and the control plane
+ * rejects unauthenticated callers once deployed — so without this the app 401s
+ * on its first message.
+ *
+ * It ships inside the bundle, which means it is **not secret**: anyone with the
+ * app can read it. That is acceptable only because it is a distinct key from
+ * the console's, revocable on its own, and because `VON_API_KEYS` accepts a
+ * list precisely so this one can be rotated without downtime. Replacing it with
+ * a per-user token is what a real multi-tenant boundary needs; until then, do
+ * not reuse the console's key here.
+ *
+ * Empty in local development, where the control plane runs open.
+ */
+const API_KEY: string =
+  (Constants.expoConfig?.extra as { apiKey?: string } | undefined)?.apiKey ??
+  process.env.EXPO_PUBLIC_VON_API_KEY ??
+  "";
+
+const authHeaders = (): Record<string, string> =>
+  API_KEY ? { authorization: `Bearer ${API_KEY}` } : {};
+
 export interface ReleaseInfo {
   kind: "ota" | "native" | "none";
   reason: string;
@@ -44,6 +68,9 @@ export function streamChat(
   const xhr = new XMLHttpRequest();
   xhr.open("POST", `${API_URL}/v1/apps/${appId}/chat`);
   xhr.setRequestHeader("content-type", "application/json");
+  for (const [name, value] of Object.entries(authHeaders())) {
+    xhr.setRequestHeader(name, value);
+  }
 
   let consumed = 0;
 
@@ -90,9 +117,10 @@ export function streamChat(
 export async function createApp(name: string, description: string) {
   const res = await fetch(`${API_URL}/v1/apps`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify({ name, description }),
   });
+  if (res.status === 401) throw new Error("Not authorised — check EXPO_PUBLIC_VON_API_KEY.");
   if (!res.ok) throw new Error(`create failed: ${res.status}`);
   return (await res.json()) as { id: string; name: string };
 }
@@ -105,7 +133,10 @@ export async function createApp(name: string, description: string) {
  * side effect of asking for a change.
  */
 export async function publish(appId: string): Promise<ReleaseInfo> {
-  const res = await fetch(`${API_URL}/v1/apps/${appId}/publish`, { method: "POST" });
+  const res = await fetch(`${API_URL}/v1/apps/${appId}/publish`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
   const body = (await res.json()) as {
     error?: string;
     summary?: string;
@@ -123,6 +154,9 @@ export async function publish(appId: string): Promise<ReleaseInfo> {
 
 /** Throw away an unpublished change and go back to what is live. */
 export async function discardPreview(appId: string): Promise<void> {
-  const res = await fetch(`${API_URL}/v1/apps/${appId}/preview`, { method: "DELETE" });
+  const res = await fetch(`${API_URL}/v1/apps/${appId}/preview`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
   if (!res.ok) throw new Error(`discard failed: ${res.status}`);
 }
