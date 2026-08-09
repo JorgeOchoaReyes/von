@@ -5,9 +5,9 @@ of a *user* — that is the whole premise (ARCHITECTURE §1). This is what **you
 provide once, so that they never have to.
 
 CI (`.github/workflows/ci.yml`) runs typecheck and tests on every push and pull
-request. CD (`.github/workflows/cd.yml`) deploys the control plane to Cloud Run
-when CI passes on `master`. CD only fires on a *successful* CI run, so a red
-commit never reaches production.
+request. CD (`.github/workflows/cd.yml`) deploys the control plane and the
+console to Cloud Run when CI passes on `master`. CD only fires on a *successful*
+CI run, so a red commit never reaches production.
 
 ---
 
@@ -49,6 +49,17 @@ gcloud firestore databases create \
 A named database, not `(default)`: the platform's own bookkeeping should not
 share a database with anything else that project ever hosts.
 
+### Container registry
+
+CD builds two images — the control plane and the console — and tags each with
+its commit SHA. Never `latest`: a rollback should name an exact image, not hope
+a mutable tag still points where you think it does.
+
+```bash
+gcloud artifacts repositories create von \
+  --repository-format=docker --location="$REGION" --project "$VON_PROJECT"
+```
+
 ### Two service accounts
 
 Separated because they fail differently. A leaked deploy credential redeploys
@@ -62,8 +73,8 @@ gcloud iam service-accounts create von-deployer --project "$VON_PROJECT"
 gcloud iam service-accounts create von-runtime --project "$VON_PROJECT"
 ```
 
-Roles for `von-deployer`: `roles/run.admin`, `roles/cloudbuild.builds.editor`,
-`roles/artifactregistry.writer`, `roles/iam.serviceAccountUser`.
+Roles for `von-deployer`: `roles/run.admin`, `roles/artifactregistry.writer`,
+`roles/iam.serviceAccountUser`.
 
 Roles for `von-runtime`: `roles/datastore.user`,
 `roles/secretmanager.secretAccessor`, and — on the **folder or organisation**
@@ -151,6 +162,7 @@ description.
 | Secret | What it is |
 |---|---|
 | `von-api-keys` | Comma-separated keys that may call the control plane |
+| `von-admin-api-key` | The single key the console presents. One of the above |
 | `anthropic-api-key` | Powers the build agent |
 | `github-installation-token` | GitHub App installation token |
 | `expo-token` | Expo bot user's access token |
@@ -202,11 +214,24 @@ approval in front of deploys; `cd.yml` already targets it.
 
 ## 8. Deploy
 
-Push to `master`. CI runs; on green, CD builds the image from
-`apps/api/Dockerfile` and deploys.
+Push to `master`. CI runs; on green, CD builds and deploys two services:
 
-The deploy fails if the service comes up **without durable storage** — `/healthz`
-reports `durable`, and a control plane silently running in memory is a failed
+| Service | From | Reachable by |
+|---|---|---|
+| `von-api` | `apps/api/Dockerfile` | Anyone — it gates itself on `VON_API_KEYS` |
+| `von-admin` | `apps/admin/Dockerfile` | Google identity only (`--no-allow-unauthenticated`) |
+
+The console deploys *after* the control plane, and reads the API's URL from
+Cloud Run rather than from configuration, so the two cannot drift apart. It is
+not publicly reachable: it holds a key that creates billable resources, so
+reach it through IAP or
+
+```bash
+gcloud run services proxy von-admin --region "$REGION" --project "$VON_PROJECT"
+```
+
+The control plane's deploy fails if it comes up **without durable storage** —
+`/healthz` reports `durable`, and one silently running in memory is a failed
 deploy, not a healthy one.
 
 To verify by hand:
@@ -219,11 +244,20 @@ curl -s -H "Authorization: Bearer $VON_API_KEY" \
 
 ### What runs on one instance, and why
 
-`--max-instances 1` is a correctness constraint, not a cost decision. A preview
-session is a git checkout plus a Metro process held in the control plane's own
-memory, so a second instance would answer a publish for a session it does not
-have. Scaling out means moving preview sessions onto their own workers first —
-the runner is already behind an interface for exactly that reason.
+`--max-instances 1` applies to the **control plane only**, and it is a
+correctness constraint rather than a cost decision. A preview session is a git
+checkout plus a Metro process held in that process's own memory, so a second
+instance would answer a publish for a session it does not have. Scaling out
+means moving preview sessions onto their own workers first — the runner is
+already behind an interface for exactly that reason.
+
+The console has no such constraint: it holds nothing in memory, scales to zero,
+and runs several instances freely.
+
+### Rolling back
+
+Run the **CD** workflow manually with a known-good commit SHA as `ref`. Images
+are tagged by commit, so this redeploys exactly what ran before.
 
 ---
 

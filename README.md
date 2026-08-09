@@ -127,7 +127,8 @@ pnpm test
 
 Both run in CI (`.github/workflows/ci.yml`) on every push to `master` and every
 pull request. On green `master`, CD (`.github/workflows/cd.yml`) deploys the
-control plane to Cloud Run. **[`docs/DEPLOY.md`](docs/DEPLOY.md)** is the
+control plane and the console to Cloud Run, images tagged by commit so a
+rollback names an exact one. **[`docs/DEPLOY.md`](docs/DEPLOY.md)** is the
 operator's checklist — every credential, in the order you need it.
 
 ```bash
@@ -186,7 +187,8 @@ Built and tested:
 - durable Firestore persistence — apps, resource ledger, and pool assignment as
   a real conditional write
 - API-key gate that refuses to run open once deployed
-- CI on every push and pull request; CD to Cloud Run on green `master`
+- CI on every push and pull request; CD of both services to Cloud Run on
+  green `master`, with a rollback path
 - control plane, admin console, Expo chat client
 - pool allocator — sticky per app, never overfills, warns before capacity runs out
 
