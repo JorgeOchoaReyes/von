@@ -3,14 +3,15 @@ import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { newRunId } from "@von/core";
 import { classifyChange } from "@von/release";
-import { createStore } from "./store.ts";
+import { authOptionsFromEnv, requireApiKey } from "./auth.ts";
+import { createPersistence } from "./store.ts";
 import { githubCtx, startGenesis } from "./provision.ts";
 import { previewChange } from "./update.ts";
 import { createPreviewSessions, startPreviewSweeper } from "./preview.ts";
 import { previewProxy } from "./proxy.ts";
 import { updateRoutes } from "./routes-update.ts";
 
-const store = createStore();
+const { store, pools, durable } = await createPersistence();
 const sessions = createPreviewSessions(store, githubCtx);
 startPreviewSweeper(sessions);
 
@@ -33,11 +34,24 @@ app.use("*", async (c, next) => {
 
 app.use("*", cors());
 
+// Everything below spends money — GCP projects, repos, agent tokens. The gate
+// goes above every route rather than on each one, so a route added later is
+// protected by default instead of by remembering.
+app.use("*", requireApiKey(authOptionsFromEnv()));
+
 // The direct (non-chat) make-and-update surface: preview, publish, update and
 // fleet update. Same code path as chat, no conversation required.
 app.route("/", updateRoutes(store, githubCtx, sessions));
 
-app.get("/healthz", (c) => c.json({ ok: true }));
+app.get("/healthz", (c) =>
+  c.json({
+    ok: true,
+    // Whether persistence is durable is the single most consequential fact
+    // about a running control plane, so it is reported rather than inferred.
+    durable,
+    previews: sessions.size,
+  }),
+);
 
 /**
  * Create an app.
@@ -56,7 +70,7 @@ app.post("/v1/apps", async (c) => {
     description: body.description ?? "",
   });
 
-  void startGenesis(store, created).catch((err) => {
+  void startGenesis(store, pools, created).catch((err) => {
     console.error(`genesis failed for ${created.id}`, err);
   });
 
@@ -159,4 +173,4 @@ app.post("/v1/apps/:id/classify", async (c) => {
 });
 
 export default app;
-export { store, sessions };
+export { store, pools, sessions };

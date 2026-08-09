@@ -546,3 +546,58 @@ turn.
 What is left is operational, not code: `*.preview.<domain>` has to resolve to
 the control plane, with a wildcard certificate. `VON_PREVIEW_HOST` turns it on;
 unset, previews stay loopback-only and nothing is exposed.
+
+---
+
+## 14. Running it for real
+
+### Durability is not a nice-to-have here
+
+Provisioning is safe to retry *because* the ledger remembers what it already
+created (§7). With the ledger in memory, a restart between "GCP created the
+project" and "we recorded it" does not resume — it re-runs, and the re-run
+creates a **second** billable project and orphans the first. Losing the app
+list is annoying; losing the ledger costs money and leaves resources nobody can
+find.
+
+So the control plane's own state — apps, runtime configs, the ledger, and pool
+assignments — lives in Firestore in the platform project, in a named database
+kept apart from anything a customer app touches. `/healthz` reports `durable`,
+and CD fails a deploy that comes up without it: a control plane silently
+running in memory is a failed deploy, not a healthy one.
+
+Pool allocation is the one place where correctness needs more than a write.
+`tryAssign` reads the occupancy and takes a slot **inside a transaction**, so
+two signups arriving together cannot both see 99/100 and both commit — which
+would put the pool over its Firestore database quota and fail app creation for
+everyone assigned to it. The seed list in `VON_POOLS` is create-if-absent for
+the same reason: `used` is live state, and rewriting it from configuration on
+every boot would hand the allocator a pool it believes is empty.
+
+### The gate
+
+Every endpoint spends money — it creates GCP projects, GitHub repositories and
+EAS projects, and runs an agent against a key we pay for. Deployed without a
+gate, the first thing that finds it turns the platform into someone else's free
+build farm. So the control plane refuses to start without `VON_API_KEYS` once
+it is configured for deployment.
+
+Two endpoints stay open deliberately: `/healthz`, because a load balancer
+cannot hold a secret, and `/v1/apps/:id/runtime-config`, which returns a
+Firebase *web* config — the same values baked into every client binary, whose
+access control lives in Firestore rules and the GCIP tenant (§4).
+
+This authorises **callers, not tenants**. `tenantId` still arrives in the
+request, which is honest for a platform whose only clients are its own admin
+console and chat app, and insufficient the moment that stops being true.
+
+### One instance, for now
+
+The control plane runs at `--max-instances 1`. That is a correctness
+constraint: a preview session is a checkout plus a Metro process in *this*
+process's memory, so a second instance would answer a publish for a session it
+does not hold. The preview runner sits behind an interface precisely so those
+sessions can move to their own workers when scale demands it — at which point
+the rest of the system does not change.
+
+Operator setup is in [DEPLOY.md](DEPLOY.md).

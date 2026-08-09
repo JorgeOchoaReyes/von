@@ -6,28 +6,11 @@ import {
   type GenesisDeps,
   type GenesisInput,
   allocatePool,
-  InMemoryPoolStore,
   type GitHubCtx,
   type PlanContext,
   type PoolStore,
 } from "@von/provisioning";
 import type { Store } from "./store.ts";
-
-/**
- * Pool registry.
- *
- * In-memory for now, seeded from the environment. Production moves this behind
- * the same durable store as everything else, because `tryAssign` has to be a
- * conditional write to be safe under concurrent signups.
- */
-const pools: PoolStore = new InMemoryPoolStore(
-  JSON.parse(process.env.VON_POOLS ?? "[]") as Array<{
-    projectId: string;
-    used: number;
-    capacity: number;
-    accepting: boolean;
-  }>,
-);
 
 /**
  * Wire the provisioning plan to real credentials.
@@ -92,7 +75,11 @@ function deps(): GenesisDeps {
  * id and the ledger short-circuits steps that already reached `ready`, so a
  * retry after a crash resumes rather than duplicating.
  */
-export async function startGenesis(store: Store, app: App): Promise<void> {
+export async function startGenesis(
+  store: Store,
+  pools: PoolStore,
+  app: App,
+): Promise<void> {
   const d = deps();
 
   // Allocate a pool before the plan runs: it is a conditional write against

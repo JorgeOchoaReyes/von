@@ -29,6 +29,7 @@ packages/
   release/      OTA-vs-native diff classifier.
   agent/        The Claude agent that edits a generated app's repo.
   preview/      Live preview sessions — a checkout plus a dev server per app.
+  store/        Durable persistence: apps, resource ledger, pool assignments.
   generator/    Blueprint -> a parameterised, per-app monorepo.
 templates/
   app-blueprint/  The ByteLearning stack with per-app values templated out.
@@ -125,7 +126,9 @@ pnpm test
 ```
 
 Both run in CI (`.github/workflows/ci.yml`) on every push to `master` and every
-pull request.
+pull request. On green `master`, CD (`.github/workflows/cd.yml`) deploys the
+control plane to Cloud Run. **[`docs/DEPLOY.md`](docs/DEPLOY.md)** is the
+operator's checklist — every credential, in the order you need it.
 
 ```bash
 pnpm --filter @von/api dev      # control plane on :8787
@@ -133,15 +136,22 @@ pnpm --filter @von/admin dev    # admin console on :3000
 pnpm --filter @von/chat  dev    # Expo chat app
 ```
 
-The control plane runs with an in-memory store and needs no credentials until
-you provision something real.
+The control plane runs with an in-memory store, with authentication off, and
+says so on startup. Setting `VON_FIRESTORE_PROJECT` or `VON_PREVIEW_HOST` puts
+it in deployment mode, where a missing `VON_API_KEYS` is a startup error rather
+than an open door.
 
 ### Credentials for real provisioning
 
 All platform-owned. Users supply none of these — that is the point.
 
+See [`docs/DEPLOY.md`](docs/DEPLOY.md) for how each one is created and which
+are Secret Manager entries versus repository variables.
+
 | Variable | What it is |
 |---|---|
+| `VON_API_KEYS` | Comma-separated keys that may call the control plane. Required once deployed |
+| `VON_FIRESTORE_PROJECT` / `VON_FIRESTORE_DATABASE` | Where the app list and resource ledger live |
 | `ANTHROPIC_API_KEY` | Powers the build agent |
 | `GOOGLE_ACCESS_TOKEN` | Provisioner service account (ADC in production) |
 | `GCP_PARENT` | Folder/org new projects are created under, e.g. `folders/123` |
@@ -167,13 +177,16 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (103 tests overall)
+- OTA-vs-native classifier and blueprint token guard (148 tests overall)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
 - preview proxy — per-session origin, token-addressed, WebSocket upgrades for
   fast refresh
-- CI on every push and pull request — typecheck and tests across all packages
+- durable Firestore persistence — apps, resource ledger, and pool assignment as
+  a real conditional write
+- API-key gate that refuses to run open once deployed
+- CI on every push and pull request; CD to Cloud Run on green `master`
 - control plane, admin console, Expo chat client
 - pool allocator — sticky per app, never overfills, warns before capacity runs out
 
@@ -183,9 +196,14 @@ Not built yet:
   built; it needs `*.preview.<domain>` pointed at the control plane. Without it
   previews stay loopback-only, which works on the machine running the control
   plane and nowhere else.
+- **Horizontal scale.** Preview sessions live in the control plane's memory, so
+  it runs at one instance. Scaling out means moving sessions to their own
+  workers — the runner is behind an interface for exactly that.
+- **Per-user identity.** The API-key gate authorises *callers*, not *tenants*;
+  `tenantId` still comes from the request. A real multi-tenant boundary needs
+  signed user tokens.
 - **Post-update checks** — watching for a crash spike on a new runtime and
   offering a rollback (EAS Update does this by republishing the prior bundle).
-- Firestore-backed store (everything is in-memory today)
 - pooled -> dedicated data migration
 - store submission (TestFlight / Play internal)
 

@@ -1,0 +1,241 @@
+# Deploying Von
+
+Everything the platform needs, in the order you need it. Nothing here is asked
+of a *user* — that is the whole premise (ARCHITECTURE §1). This is what **you**
+provide once, so that they never have to.
+
+CI (`.github/workflows/ci.yml`) runs typecheck and tests on every push and pull
+request. CD (`.github/workflows/cd.yml`) deploys the control plane to Cloud Run
+when CI passes on `master`. CD only fires on a *successful* CI run, so a red
+commit never reaches production.
+
+---
+
+## 1. Google Cloud
+
+One project for the platform itself. Pool projects (§5) are separate and come
+later.
+
+```bash
+export VON_PROJECT=von-platform          # your platform project
+export REGION=us-central1
+
+gcloud services enable \
+  run.googleapis.com \
+  cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
+  firestore.googleapis.com \
+  secretmanager.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  firebase.googleapis.com \
+  identitytoolkit.googleapis.com \
+  --project "$VON_PROJECT"
+```
+
+### Firestore for the control plane
+
+The resource ledger lives here. This is the difference between a restart that
+*resumes* provisioning and one that re-runs it — and a re-run with no memory
+creates a second billable GCP project and orphans the first.
+
+```bash
+gcloud firestore databases create \
+  --database=von-control \
+  --location="$REGION" \
+  --type=firestore-native \
+  --project "$VON_PROJECT"
+```
+
+A named database, not `(default)`: the platform's own bookkeeping should not
+share a database with anything else that project ever hosts.
+
+### Two service accounts
+
+Separated because they fail differently. A leaked deploy credential redeploys
+old code; a leaked runtime credential creates projects and spends money.
+
+```bash
+# CI/CD: builds the image and updates the service.
+gcloud iam service-accounts create von-deployer --project "$VON_PROJECT"
+
+# The running control plane: provisions customers' resources.
+gcloud iam service-accounts create von-runtime --project "$VON_PROJECT"
+```
+
+Roles for `von-deployer`: `roles/run.admin`, `roles/cloudbuild.builds.editor`,
+`roles/artifactregistry.writer`, `roles/iam.serviceAccountUser`.
+
+Roles for `von-runtime`: `roles/datastore.user`,
+`roles/secretmanager.secretAccessor`, and — on the **folder or organisation**
+that holds pool projects, not on the platform project —
+`roles/resourcemanager.projectCreator` and `roles/billing.user`.
+
+### Workload Identity Federation
+
+So CD holds no long-lived key at all. Follow
+[google-github-actions/auth](https://github.com/google-github-actions/auth#setting-up-workload-identity-federation),
+restricting the provider to this repository. The workflow needs
+`GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_DEPLOY_SERVICE_ACCOUNT`.
+
+---
+
+## 2. GitHub
+
+A GitHub App owned by your org, installed on the org that will hold generated
+repositories. It needs **Contents: read & write**, **Actions: read & write**,
+**Secrets: write**, and **Administration: write** (to create repositories).
+
+Mark the blueprint repository as a **template** — genesis creates each app's
+repo with the template-generate API.
+
+> The default branch of generated repositories must be `master`, matching
+> `PROD_BRANCH`. Set it as the template's default branch; the API used here
+> cannot change repository settings after creation.
+
+---
+
+## 3. Expo
+
+One Expo organisation that owns every generated project. There is no API to
+create an Expo account on a user's behalf (ARCHITECTURE §1), so this is
+permanent — projects transfer to a customer's own org only on request, at store
+submission time.
+
+You need a bot user's access token, the account id, and the account name.
+
+---
+
+## 4. Preview hosting
+
+Previews are served at `<token>.$VON_PREVIEW_HOST`, proxied to the session's
+loopback port. Point a **wildcard** record at the Cloud Run service and map the
+domain:
+
+```bash
+gcloud beta run domain-mappings create \
+  --service von-api --domain "*.preview.example.com" \
+  --region "$REGION" --project "$VON_PROJECT"
+```
+
+Leave `VON_PREVIEW_HOST` unset and previews stay loopback-only — usable from the
+machine running the control plane, invisible from a phone. Nothing is exposed
+either way.
+
+---
+
+## 5. Pool projects
+
+Each pool holds ~100 apps, bounded by the Firestore database quota
+(ARCHITECTURE §5). Create them **ahead of demand** — never on a user's path —
+each with billing attached and a Firebase web app, then list them in
+`VON_POOLS`:
+
+```json
+[{ "projectId": "von-pool-001", "used": 0, "capacity": 100, "accepting": true }]
+```
+
+`VON_POOL_WEB_CONFIGS` maps each pool project id to its Firebase web config.
+
+`VON_POOLS` seeds the registry **create-if-absent**. `used` is live state, so
+editing the list later will not resurrect an occupancy count — capacity changes
+and draining are deliberate operator actions against Firestore.
+
+---
+
+## 6. Secrets
+
+Create these in Secret Manager under exactly these names; `cd.yml` mounts them
+by name, so nothing sensitive appears in a workflow log or in the service
+description.
+
+| Secret | What it is |
+|---|---|
+| `von-api-keys` | Comma-separated keys that may call the control plane |
+| `anthropic-api-key` | Powers the build agent |
+| `github-installation-token` | GitHub App installation token |
+| `expo-token` | Expo bot user's access token |
+| `gemini-api-key` | Handed to generated apps' Cloud Functions |
+| `gcp-billing-account` | e.g. `billingAccounts/0X0X0X-...` |
+| `von-pools` | The JSON above |
+| `von-pool-web-configs` | Firebase web config per pool project |
+
+```bash
+printf '%s' "$(openssl rand -hex 32)" | \
+  gcloud secrets create von-api-keys --data-file=- --project "$VON_PROJECT"
+```
+
+`VON_API_KEYS` is not optional in a deployment. Every endpoint here creates
+billable cloud resources, and the control plane **refuses to start** without it
+once `VON_FIRESTORE_PROJECT` or `VON_PREVIEW_HOST` is set — an open control
+plane is someone else's free build farm.
+
+---
+
+## 7. Repository configuration
+
+**Secrets** (Settings → Secrets and variables → Actions → Secrets):
+
+| Name | Value |
+|---|---|
+| `GCP_PROJECT` | Platform project id |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Full provider resource name |
+| `GCP_DEPLOY_SERVICE_ACCOUNT` | `von-deployer@…iam.gserviceaccount.com` |
+| `GCP_RUNTIME_SERVICE_ACCOUNT` | `von-runtime@…iam.gserviceaccount.com` |
+
+**Variables** (same page → Variables) — non-secret, so they are readable in
+logs, which is what you want when diagnosing a deploy:
+
+| Name | Example |
+|---|---|
+| `GCP_REGION` | `us-central1` |
+| `GCP_PARENT` | `folders/123456789` |
+| `VON_FIRESTORE_DATABASE` | `von-control` |
+| `VON_PREVIEW_HOST` | `preview.example.com` |
+| `VON_GITHUB_ORG` | `von-apps` |
+| `VON_TEMPLATE_REPO` | `your-org/app-blueprint` |
+| `EXPO_ACCOUNT_ID` / `EXPO_ACCOUNT_NAME` | from Expo |
+
+Create a `production` environment (Settings → Environments) if you want a manual
+approval in front of deploys; `cd.yml` already targets it.
+
+---
+
+## 8. Deploy
+
+Push to `master`. CI runs; on green, CD builds the image from
+`apps/api/Dockerfile` and deploys.
+
+The deploy fails if the service comes up **without durable storage** — `/healthz`
+reports `durable`, and a control plane silently running in memory is a failed
+deploy, not a healthy one.
+
+To verify by hand:
+
+```bash
+curl -s https://<service-url>/healthz            # {"ok":true,"durable":true,...}
+curl -s -H "Authorization: Bearer $VON_API_KEY" \
+     https://<service-url>/v1/apps
+```
+
+### What runs on one instance, and why
+
+`--max-instances 1` is a correctness constraint, not a cost decision. A preview
+session is a git checkout plus a Metro process held in the control plane's own
+memory, so a second instance would answer a publish for a session it does not
+have. Scaling out means moving preview sessions onto their own workers first —
+the runner is already behind an interface for exactly that reason.
+
+---
+
+## Local development
+
+No credentials needed:
+
+```bash
+pnpm install
+pnpm --filter @von/api dev
+```
+
+It runs in memory, with authentication off, and says so on startup. Setting
+either `VON_FIRESTORE_PROJECT` or `VON_PREVIEW_HOST` puts it in deployment mode,
+where a missing `VON_API_KEYS` is a startup error.

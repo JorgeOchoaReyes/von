@@ -32,6 +32,7 @@ test("the runner waits for the server to answer before handing back a URL", asyn
   let probes = 0;
 
   const runner = new ExpoWebRunner({
+    install: async () => {},
     spawnServer: () => asChild(child),
     // A webview pointed at a not-yet-listening Metro shows a connection error
     // and does not retry, so readiness has to be established here.
@@ -48,6 +49,7 @@ test("the runner waits for the server to answer before handing back a URL", asyn
 test("the preview serves the Expo app inside the checkout, not the repo root", async () => {
   let dir = "";
   const runner = new ExpoWebRunner({
+    install: async () => {},
     spawnServer: (d) => {
       dir = d;
       return asChild(new FakeChild());
@@ -62,6 +64,7 @@ test("the preview serves the Expo app inside the checkout, not the repo root", a
 test("a server that dies at boot fails fast instead of timing out", async () => {
   const child = new FakeChild();
   const runner = new ExpoWebRunner({
+    install: async () => {},
     spawnServer: () => {
       // A broken app (bad package.json, missing dep) exits immediately. Waiting
       // out the full readiness timeout would make every such failure look like
@@ -82,6 +85,7 @@ test("a server that dies at boot fails fast instead of timing out", async () => 
 test("a timeout kills the child rather than leaking it", async () => {
   const child = new FakeChild();
   const runner = new ExpoWebRunner({
+    install: async () => {},
     spawnServer: () => asChild(child),
     probe: async () => false,
     readyTimeoutMs: 10,
@@ -94,6 +98,7 @@ test("a timeout kills the child rather than leaking it", async () => {
 test("stop terminates the server, and stopping an exited one is a no-op", async () => {
   const child = new FakeChild();
   const runner = new ExpoWebRunner({
+    install: async () => {},
     spawnServer: () => asChild(child),
     probe: async () => true,
   });
@@ -109,4 +114,61 @@ test("stop terminates the server, and stopping an exited one is a no-op", async 
 test("freePort returns a port nothing is holding", async () => {
   const a = await freePort();
   assert.ok(a > 0 && a < 65536);
+});
+
+test("dependencies are installed before Metro is started", async () => {
+  const order: string[] = [];
+  const runner = new ExpoWebRunner({
+    install: async (dir) => {
+      order.push(`install:${dir}`);
+    },
+    spawnServer: () => {
+      order.push("metro");
+      return asChild(new FakeChild());
+    },
+    probe: async () => true,
+  });
+
+  await runner.start("/tmp/repo", { appId: "app_1" });
+
+  // A fresh shallow clone has no node_modules; starting Metro first means it
+  // exits instantly on a module resolution error and the preview never appears.
+  assert.deepEqual(order, ["install:/tmp/repo", "metro"]);
+});
+
+test("the install runs at the repo root, not in the Expo app", async () => {
+  let installDir = "";
+  let metroDir = "";
+  const runner = new ExpoWebRunner({
+    install: async (dir) => {
+      installDir = dir;
+    },
+    spawnServer: (dir) => {
+      metroDir = dir;
+      return asChild(new FakeChild());
+    },
+    probe: async () => true,
+  });
+
+  await runner.start("/tmp/repo", { appId: "app_1" });
+
+  // It is a workspace: dependencies are hoisted to the root even though Metro
+  // runs inside apps/expo.
+  assert.equal(installDir, "/tmp/repo");
+  assert.equal(metroDir, "/tmp/repo/apps/expo");
+});
+
+test("a failed install surfaces instead of a confusing Metro error", async () => {
+  const runner = new ExpoWebRunner({
+    install: async () => {
+      throw new Error("pnpm install failed with code 1");
+    },
+    spawnServer: () => asChild(new FakeChild()),
+    probe: async () => true,
+  });
+
+  await assert.rejects(
+    runner.start("/tmp/repo", { appId: "app_1" }),
+    /pnpm install failed/,
+  );
 });
