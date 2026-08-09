@@ -23,11 +23,15 @@ export interface EasCtx {
   accountId: string;
   accountName: string;
   /**
-   * EAS project id of Von's **shell app** — the host binary that pooled apps
-   * are delivered inside. Shell-delivered apps do not get their own EAS
-   * project, so their update channel is created on this one.
+   * EAS project id of Von's **shell app** — the host binary that shell-mode
+   * apps are delivered inside. Those apps do not get their own EAS project, so
+   * their update channel is created on this one.
+   *
+   * Optional, because standalone is the default (docs/ARCHITECTURE.md §12) and
+   * a deployment that never uses shell mode should not have to invent a project
+   * id to boot. Required only when an app actually asks for shell delivery.
    */
-  shellProjectId: string;
+  shellProjectId?: string;
 }
 
 async function graphql<T>(

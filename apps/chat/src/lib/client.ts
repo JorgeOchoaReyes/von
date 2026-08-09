@@ -8,13 +8,23 @@ export const API_URL: string =
 export interface ReleaseInfo {
   kind: "ota" | "native" | "none";
   reason: string;
+  commit?: string | null;
+}
+
+/** What a turn produced: something to look at, and what shipping it would cost. */
+export interface PreviewInfo {
+  url: string | null;
+  error?: string;
+  kind: "ota" | "native" | "none";
+  reason: string;
   files: string[];
+  publishable: boolean;
 }
 
 export type ChatEvent =
   | { type: "text"; text: string }
   | { type: "tool"; name: string }
-  | { type: "release"; release: ReleaseInfo }
+  | { type: "preview"; preview: PreviewInfo }
   | { type: "error"; message: string }
   | { type: "end" };
 
@@ -57,7 +67,7 @@ export function streamChat(
         const parsed = JSON.parse(data);
         if (event === "text") onEvent({ type: "text", text: parsed.text });
         else if (event === "tool") onEvent({ type: "tool", name: parsed.name });
-        else if (event === "release") onEvent({ type: "release", release: parsed });
+        else if (event === "preview") onEvent({ type: "preview", preview: parsed });
         else if (event === "error") onEvent({ type: "error", message: parsed.message });
         else if (event === "run.end") onEvent({ type: "end" });
       } catch {
@@ -85,4 +95,34 @@ export async function createApp(name: string, description: string) {
   });
   if (!res.ok) throw new Error(`create failed: ${res.status}`);
   return (await res.json()) as { id: string; name: string };
+}
+
+/**
+ * Ship what was previewed.
+ *
+ * Deliberately a separate call from the chat turn: publishing is what reaches
+ * other people's phones, so it needs its own gesture rather than happening as a
+ * side effect of asking for a change.
+ */
+export async function publish(appId: string): Promise<ReleaseInfo> {
+  const res = await fetch(`${API_URL}/v1/apps/${appId}/publish`, { method: "POST" });
+  const body = (await res.json()) as {
+    error?: string;
+    summary?: string;
+    commitSha?: string | null;
+    ship?: { decision: { kind: "ota" | "native" | "none" } } | null;
+  };
+  if (!res.ok) throw new Error(body.error ?? `publish failed: ${res.status}`);
+
+  return {
+    kind: body.ship?.decision.kind ?? "none",
+    reason: body.summary ?? "",
+    commit: body.commitSha ?? null,
+  };
+}
+
+/** Throw away an unpublished change and go back to what is live. */
+export async function discardPreview(appId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/v1/apps/${appId}/preview`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`discard failed: ${res.status}`);
 }

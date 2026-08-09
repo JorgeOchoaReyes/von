@@ -148,6 +148,75 @@ test("a new directory is reported file-by-file, not collapsed", async () => {
   ]);
 });
 
+test("a rejected preview is discarded, modifications and additions alike", async () => {
+  const remote = await makeRemote();
+  const ws = open(remote);
+  await ws.open();
+
+  await ws.write("README.md", "# rewritten by the agent\n");
+  await ws.write("apps/expo/app/new.tsx", "export default function A() {}\n");
+  assert.equal((await ws.gitChangedFiles()).length, 2);
+
+  await ws.discardChanges();
+
+  // Both halves matter: `reset` alone leaves the new file behind, `clean` alone
+  // leaves the rewritten one. Either way the next turn starts from a tree the
+  // user already rejected.
+  assert.deepEqual(await ws.gitChangedFiles(), []);
+  assert.equal(await ws.read("README.md"), "# app\n");
+  assert.equal(await ws.read("apps/expo/app/new.tsx"), null);
+});
+
+test("discarding leaves published work alone", async () => {
+  const remote = await makeRemote();
+  const ws = open(remote);
+  await ws.open();
+
+  await ws.write("apps/expo/app/kept.tsx", "export const kept = 1;\n");
+  await ws.commitAndPush("published");
+  await ws.write("apps/expo/app/rejected.tsx", "export const no = 1;\n");
+
+  await ws.discardChanges();
+
+  assert.equal(await ws.read("apps/expo/app/kept.tsx"), "export const kept = 1;\n");
+  assert.equal(await ws.read("apps/expo/app/rejected.tsx"), null);
+});
+
+test("the token is fetched per operation, not captured at clone time", async () => {
+  const remote = await makeRemote();
+  let calls = 0;
+  const ws = new GitWorkspace({
+    fullName: "von-apps/test",
+    token: async () => `token-${++calls}`,
+    branch: "master",
+    remoteUrl: remote,
+  });
+  cleanups.push(() => ws.dispose());
+  await ws.open();
+
+  // A preview session outlives a GitHub installation token's hour, and the
+  // expiry would surface at the push — the one operation the user is watching.
+  const atClone = calls;
+  await ws.write("apps/expo/app/index.tsx", "export default function A() {}\n");
+  await ws.commitAndPush("later");
+  assert.ok(calls > atClone, "expected a fresh token for operations after the clone");
+});
+
+test("two live workspaces do not clobber each other's credentials", async () => {
+  const [remoteA, remoteB] = await Promise.all([makeRemote(), makeRemote()]);
+  const a = open(remoteA);
+  const b = open(remoteB);
+  await a.open();
+  await b.open();
+
+  // Preview keeps a checkout open per app, so several are alive at once. When
+  // the token lived in process.env, disposing one broke the others' pushes.
+  await b.dispose();
+
+  await a.write("apps/expo/app/index.tsx", "export default function A() {}\n");
+  assert.ok(await a.commitAndPush("still works"));
+});
+
 test("renames report the new path", async () => {
   const remote = await makeRemote();
   const ws = open(remote);

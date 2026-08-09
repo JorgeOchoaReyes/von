@@ -63,11 +63,14 @@ The app does **not** get a GCP project. It gets, inside a shared pool project:
   code; the generated app calls the same platform callables every pooled app
   calls, and the function scopes its work by the tenant claim on the caller's
   token.
-- delivery through the **shell app** — Von's own host binary — on a per-app
-  **EAS Update channel**. No native build.
+- delivery as a **standalone** app: its own EAS project, bundle id and binaries,
+  on its own **EAS Update channel**. One ~10 minute build up front, then every
+  change is a ~1 minute OTA. (The shell app was the alternative here; §12
+  explains why it lost.)
 
-Time from "user finishes describing the app" to "user is using it on their
-phone": seconds. Marginal cost per app: Firestore storage.
+Time from "user finishes describing the app" to "user is looking at it": seconds,
+in the **web preview** (§13). Time to "using it on their phone": one build.
+Marginal cost per app: Firestore storage.
 
 **This is where the overwhelming majority of apps live, permanently.**
 
@@ -275,7 +278,7 @@ bundle from ever landing on an old binary.
 | Brief §5 hand-off | Status here |
 |---|---|
 | Judge native rebuild vs OTA | **Automated** — `packages/release` |
-| Install APK to see a native change | **Removed for Tier 0** — shell app + channel; native only on publish |
+| Install APK to see a native change | **Reduced to once per app** — one build, then OTAs; the web preview (§13) covers the wait |
 | Paste API keys / credentials | **Automated** — `github.secret` driver seals and uploads |
 | Trigger deploy and watch it | **Automated** — `dispatchWorkflow` + run polling |
 | Eyeball whether it works | **Mostly closed by the OTA loop** — see below |
@@ -283,7 +286,7 @@ bundle from ever landing on an old binary.
 
 ### Verification is the OTA update
 
-The fast feedback loop is not a screenshot harness — it is the update itself.
+Final verification is not a screenshot harness — it is the update itself.
 A JS/asset change type-checks in CI and is on the user's phone in about a
 minute, so *they* verify it, in the real app, on the real device, against what
 they actually meant. That is both cheaper and more truthful than an agent
@@ -293,14 +296,16 @@ This is why the classifier's bias matters so much (§8): every change it can
 honestly route to OTA is a change the user confirms in a minute instead of ten,
 and the whole loop stays conversational.
 
-Two things still worth building on top of it:
+But a minute is still too slow to be the *iteration* loop, and an OTA is not
+reversible for free — it reaches whoever has the app. So verification is now two
+stages, not one: the preview (§13) is where the user decides whether the change
+is right, and the OTA is where it becomes real. Only the second one is a
+release.
 
-- **An in-chat preview** for the seconds before the OTA lands — a web render of
-  the changed screen, so the user sees something immediately. A convenience, not
-  a replacement: the OTA is what proves it works on-device.
-- **Automated post-update checks** — the agent watching for a crash spike or a
-  failed launch on the new runtime and offering a rollback, which EAS Update
-  supports natively by republishing the previous bundle to the channel.
+Still worth building on top: **automated post-update checks** — the agent
+watching for a crash spike or a failed launch on the new runtime and offering a
+rollback, which EAS Update supports natively by republishing the previous bundle
+to the channel.
 
 ---
 
@@ -455,6 +460,64 @@ The instant-feedback gap can be covered by a **web preview** — the same Expo
 bundle rendered in the chat — which is genuinely instant, needs no binary, and
 is useful regardless of which delivery model wins.
 
-**Recommendation: drop the shell app for v1.** Note the two axes are
-independent, and this changes only delivery: pooled backends (§3) are unaffected
-and remain the default.
+### Decision: no shell app for v1
+
+Taken. `deliveryMode` defaults to `standalone`; every new app gets its own EAS
+project and binaries, and `VON_SHELL_EAS_PROJECT_ID` is now optional
+configuration rather than a required one. Shell delivery remains implemented and
+selectable — genesis still skips the per-app EAS project for it — but nothing
+chooses it by default, and genesis fails loudly rather than falling back if an
+app asks for shell delivery without a shell project configured.
+
+Note the two axes are independent: this changes only delivery. Pooled backends
+(§3) are unaffected and remain the default.
+
+---
+
+## 13. Preview before publish
+
+The delivery numbers above — 10 minutes for a build, 1 minute for an OTA — are
+respectable for *shipping* and hopeless for *deciding*. A user working out what
+they want changes their mind several times a minute, and neither number can keep
+up. Worse, before this split every chat turn pushed to `master` and dispatched a
+release, so a user exploring an idea was shipping each half-formed step of it to
+their own users.
+
+So the loop has two stages and two different costs:
+
+| | Preview | Publish |
+|---|---|---|
+| What runs | the working tree, uncommitted | a commit on `master` |
+| Who sees it | only the author | everyone with the app installed |
+| Speed | seconds; fast-refresh after the first turn | ~1 min OTA / ~10 min build |
+| Undo | `DELETE /v1/apps/:id/preview` | a follow-up release |
+
+**A preview session** is a pair: a git checkout of the app's repo and a Metro
+dev server serving its web target from that checkout. It is keyed by app and
+held open across requests, because the thing the user is looking at is an
+uncommitted working tree — it has to survive from the turn that produced it to
+the turn where they accept or reject it.
+
+Three properties do the work:
+
+- **One session per app.** Two concurrent turns must edit the same tree. Two
+  clones would mean the second push silently discarding the first's work, which
+  a user experiences as "it forgot what I asked for".
+- **Metro, not `expo export`.** Export rebuilds the whole bundle every turn;
+  a dev server pays that once per session and then fast-refreshes. The first
+  turn takes a moment, every turn after it is instant.
+- **Bounded.** Each session is a customer's repo on disk plus a process, so
+  sessions are capped, evicted LRU, and swept on idle. An abandoned session's
+  unpublished changes are lost — they were never committed, and keeping a
+  checkout alive forever because a user might come back is how the host fills up.
+
+Publishing classifies the change set recorded at preview time rather than asking
+git again, because by then the commit is what holds the diff and a fresh `git
+status` would report a clean tree and classify every publish as a no-op. The
+pending change is cleared only after the dispatch succeeds, so a failed dispatch
+leaves the change republishable rather than committed-but-never-shipped.
+
+What is left to build: a **preview proxy**. Sessions serve on a loopback port,
+which is right for the machine running the control plane and useless for a
+phone. `VON_PREVIEW_BASE` is the hook — a public host that maps a session's
+path to its port.

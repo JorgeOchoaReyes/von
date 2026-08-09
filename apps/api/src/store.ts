@@ -42,10 +42,12 @@ export function createStore(): Store {
         name,
         slug: slugify(name),
         description,
-        // Every app starts pooled + shell: usable in seconds, no GCP quota,
-        // no native build. Promotion is an explicit later action.
+        // Pooled: usable in seconds, no GCP quota. Standalone: its own binary,
+        // so one app's bad bundle cannot brick another's. Promotion to a
+        // dedicated backend is an explicit later action; the web preview covers
+        // the wait for the first build.
         backendTier: "pooled",
-        deliveryMode: "shell",
+        deliveryMode: "standalone",
         firebaseProjectId: null,
         gcipTenantId: null,
         repoFullName: null,

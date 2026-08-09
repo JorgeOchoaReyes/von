@@ -28,6 +28,7 @@ packages/
   provisioning/ Google/GitHub/EAS drivers + idempotent plan orchestrator.
   release/      OTA-vs-native diff classifier.
   agent/        The Claude agent that edits a generated app's repo.
+  preview/      Live preview sessions — a checkout plus a dev server per app.
   generator/    Blueprint -> a parameterised, per-app monorepo.
 templates/
   app-blueprint/  The ByteLearning stack with per-app values templated out.
@@ -71,18 +72,29 @@ the app on a device you cannot reach.
 
 ## Making and updating apps
 
-One code path — `apps/api/src/update.ts` — backs all three surfaces, so how an
-instruction becomes a change on someone's phone is defined in exactly one place:
+One code path — `apps/api/src/update.ts` — backs every surface, so how an
+instruction becomes a change on someone's phone is defined in exactly one place.
+It has two halves, and the split between them is the product:
 
 ```
-clone -> agent edits -> commit & push -> classify the real git diff ->
-dispatch OTA or build -> record the runtime version
+preview:  agent edits the working tree -> web preview -> classify what
+          publishing would do
+publish:  commit & push -> dispatch OTA or build -> record the runtime version
 ```
+
+Nothing leaves the session until the user publishes. A preview session holds an
+open checkout and a Metro dev server per app, so the first turn costs a few
+seconds to boot and every turn after it fast-refreshes in place. Sessions are
+capped and swept on idle — each one is a customer's repo on disk plus a
+process.
 
 | Surface | How |
 |---|---|
-| Chat | `POST /v1/apps/:id/chat` — the same path, streamed over SSE |
-| One app, no chat | `POST /v1/apps/:id/update` with `{"instruction": "..."}` |
+| Chat | `POST /v1/apps/:id/chat` — streams the turn, ends in a preview |
+| Publish | `POST /v1/apps/:id/publish` — the only call that ships |
+| Reject | `DELETE /v1/apps/:id/preview` — back to the last published state |
+| Preview state | `GET /v1/apps/:id/preview` — URL and what is pending |
+| One app, no chat | `POST /v1/apps/:id/update` — preview and publish in one, for scripts |
 | Every app | `POST /v1/fleet/update` with `{"instruction": "...", "dryRun": true}` first |
 
 The fleet route is how a blueprint fix or dependency bump reaches apps that
@@ -131,8 +143,9 @@ All platform-owned. Users supply none of these — that is the point.
 | `VON_GITHUB_ORG` | Org that owns generated repos |
 | `VON_TEMPLATE_REPO` | `owner/repo` of the blueprint, marked as a template |
 | `EXPO_TOKEN` / `EXPO_ACCOUNT_ID` / `EXPO_ACCOUNT_NAME` | Platform's Expo org |
-| `VON_SHELL_EAS_PROJECT_ID` | The shell app's EAS project — pooled apps' update channels live here |
 | `GEMINI_API_KEY` | Handed to generated apps' Cloud Functions |
+| `VON_PREVIEW_BASE` | Public base URL of the preview proxy; without it previews are loopback-only |
+| `VON_SHELL_EAS_PROJECT_ID` | *Optional.* Only needed if an app asks for shell delivery |
 
 ---
 
@@ -145,18 +158,18 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (38 tests overall)
+- OTA-vs-native classifier and blueprint token guard (89 tests overall)
 - streaming build agent with a scoped file-edit tool surface
+- preview-then-publish: live web preview of the uncommitted tree, explicit
+  publish, one-gesture discard
 - control plane, admin console, Expo chat client
 - pool allocator — sticky per app, never overfills, warns before capacity runs out
 
 Not built yet:
 
-- **In-chat preview** — a web render of the changed screen for the seconds
-  before the OTA lands. Verification itself is the OTA: a JS change type-checks
-  in CI and is on the phone in about a minute, so the user confirms it in the
-  real app rather than an agent judging its own work. The preview is a
-  convenience on top of that, not a replacement.
+- **A preview proxy.** Sessions serve on a loopback port; reaching one from a
+  phone needs a public host mapped to that port (`VON_PREVIEW_BASE`). Until
+  then previews work on the machine running the control plane.
 - **Post-update checks** — watching for a crash spike on a new runtime and
   offering a rollback (EAS Update does this by republishing the prior bundle).
 - Firestore-backed store (everything is in-memory today)
@@ -180,8 +193,9 @@ What changes is only what has to be per-app:
   hardcoded as an env fallback in `apps/expo/src/lib/firebase.ts`). Right for one
   app, fatal for a platform — it becomes a runtime fetch.
 - Workflow branch triggers and `FIREBASE_PROJECT` are hardcoded; both templated.
-- Channels are profile-named; with a shared shell binary the channel is the only
-  separation between tenants' bundles, so it is derived from the app id.
+- Channels are profile-named; here the channel is what separates one app's
+  bundles from another's, so it is derived from the app id, never from a name
+  the user chose.
 - CI runs Node 18 while deploys run Node 20. Standardised on 20.
 
 One thing added: a type-check gate in `eas-update.yml` before publishing. In

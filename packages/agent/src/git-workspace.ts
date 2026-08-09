@@ -50,21 +50,49 @@ export class GitWorkspace implements Workspace {
     return this.root;
   }
 
+  /**
+   * Absolute path of the checkout.
+   *
+   * Exposed because the preview runner serves the *working tree* — including
+   * edits that have not been committed yet. That is the whole point of preview:
+   * the user looks at the change before it becomes a commit.
+   */
+  get path(): string {
+    return this.dir;
+  }
+
+  /**
+   * Environment for a git child process.
+   *
+   * The token goes in the *child's* environment, never in `process.env`. A
+   * preview session keeps its checkout open across many turns, so several
+   * workspaces are alive at once; a shared process-wide variable would mean one
+   * session's cleanup silently breaking another session's push.
+   *
+   * It is also re-fetched per call rather than captured at open(): installation
+   * tokens expire in an hour and a preview session can outlive that easily, so
+   * a token captured at clone time would fail at exactly the moment that
+   * matters — the push.
+   */
+  private async env(): Promise<NodeJS.ProcessEnv> {
+    return {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: "0",
+      VON_GIT_TOKEN: await this.opts.token(),
+      ...(this.askpass ? { GIT_ASKPASS: this.askpass } : {}),
+    };
+  }
+
   private async git(args: string[]): Promise<string> {
     const { stdout } = await run("git", args, {
       cwd: this.dir,
-      env: {
-        ...process.env,
-        GIT_TERMINAL_PROMPT: "0",
-        ...(this.askpass ? { GIT_ASKPASS: this.askpass } : {}),
-      },
+      env: await this.env(),
       maxBuffer: 32 * 1024 * 1024,
     });
     return stdout;
   }
 
   async open(): Promise<void> {
-    const token = await this.opts.token();
     const base = await mkdtemp(join(tmpdir(), "von-ws-"));
 
     // Askpass script: git calls this instead of prompting, and the token stays
@@ -73,7 +101,6 @@ export class GitWorkspace implements Workspace {
     await writeFile(this.askpass, `#!/bin/sh\nprintf '%s' "$VON_GIT_TOKEN"\n`, {
       mode: 0o700,
     });
-    process.env.VON_GIT_TOKEN = token;
 
     this.root = join(base, "repo");
     const branch = this.opts.branch ?? "master";
@@ -89,7 +116,7 @@ export class GitWorkspace implements Workspace {
           `https://x-access-token@github.com/${this.opts.fullName}.git`,
         this.root,
       ],
-      { env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: this.askpass } },
+      { env: await this.env() },
     );
 
     const author = this.opts.author ?? { name: "Von", email: "bot@von.app" };
@@ -192,9 +219,23 @@ export class GitWorkspace implements Workspace {
       .sort();
   }
 
+  /**
+   * Throw away everything the agent did since the last commit.
+   *
+   * The counterpart to preview: a user who does not like what they see gets to
+   * reject it, and the next turn starts from the last published state rather
+   * than from a rejected experiment. Both halves are needed — `clean` for files
+   * the agent added, `checkout` for the ones it modified.
+   */
+  async discardChanges(): Promise<void> {
+    await this.git(["reset", "--hard", "HEAD"]);
+    await this.git(["clean", "-fd"]);
+    this.touched.clear();
+  }
+
   async dispose(): Promise<void> {
-    delete process.env.VON_GIT_TOKEN;
     if (this.root) await rm(dirname(this.root), { recursive: true, force: true });
     this.root = null;
+    this.askpass = null;
   }
 }

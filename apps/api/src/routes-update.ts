@@ -2,19 +2,91 @@ import { Hono } from "hono";
 import { rollout } from "@von/release";
 import type { GitHubCtx } from "@von/provisioning";
 import type { Store } from "./store.ts";
-import { updateApp } from "./update.ts";
+import {
+  discardPreview,
+  previewChange,
+  publishChange,
+  updateApp,
+  type Sessions,
+} from "./update.ts";
 
 /**
  * The direct make-and-update surface.
  *
  * Chat is the product; these are the same operations without a conversation,
- * for scripts, CI, the admin console, and fleet work. They share `updateApp`,
- * so a change to how releases are routed applies everywhere at once.
+ * for scripts, CI, the admin console, and fleet work. They share `previewChange`
+ * and `publishChange`, so a change to how releases are routed applies
+ * everywhere at once.
  */
-export function updateRoutes(store: Store, github: () => GitHubCtx): Hono {
+export function updateRoutes(
+  store: Store,
+  github: () => GitHubCtx,
+  sessions: Sessions,
+): Hono {
   const app = new Hono();
 
-  /** Apply one instruction to one app, synchronously. */
+  /**
+   * Apply one instruction and return a preview. Nothing is committed or shipped
+   * — `POST /publish` is what does that.
+   */
+  app.post("/v1/apps/:id/preview", async (c) => {
+    const target = await store.getApp(c.req.param("id"));
+    if (!target) return c.json({ error: "not found" }, 404);
+
+    const { instruction } = await c.req.json<{ instruction?: string }>();
+    if (!instruction) return c.json({ error: "instruction is required" }, 400);
+
+    try {
+      return c.json(await previewChange(sessions, target, { instruction }));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  /** Current preview state: is there a URL to look at, is anything pending. */
+  app.get("/v1/apps/:id/preview", async (c) => {
+    const id = c.req.param("id");
+    const session = sessions.get(id);
+    if (!session) return c.json({ appId: id, url: null, pending: null });
+    return c.json({
+      appId: id,
+      url: session.url,
+      pending: session.pending,
+      startedAt: session.createdAt,
+    });
+  });
+
+  /** Reject the previewed change and go back to what is live. */
+  app.delete("/v1/apps/:id/preview", async (c) => {
+    const target = await store.getApp(c.req.param("id"));
+    if (!target) return c.json({ error: "not found" }, 404);
+
+    try {
+      await discardPreview(sessions, target);
+      return c.json({ appId: target.id, discarded: true });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  /** Commit, push and ship what was previewed. */
+  app.post("/v1/apps/:id/publish", async (c) => {
+    const target = await store.getApp(c.req.param("id"));
+    if (!target) return c.json({ error: "not found" }, 404);
+
+    try {
+      return c.json(await publishChange(store, sessions, target, github()));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  /**
+   * Preview and publish in one call.
+   *
+   * Kept for scripts and CI, where there is no user to look at a preview. The
+   * interactive surfaces deliberately do not use it.
+   */
   app.post("/v1/apps/:id/update", async (c) => {
     const target = await store.getApp(c.req.param("id"));
     if (!target) return c.json({ error: "not found" }, 404);
@@ -23,7 +95,7 @@ export function updateRoutes(store: Store, github: () => GitHubCtx): Hono {
     if (!instruction) return c.json({ error: "instruction is required" }, 400);
 
     try {
-      return c.json(await updateApp(store, target, github(), { instruction }));
+      return c.json(await updateApp(store, sessions, target, github(), { instruction }));
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }
@@ -73,7 +145,9 @@ export function updateRoutes(store: Store, github: () => GitHubCtx): Hono {
       async (item) => {
         const target = await store.getApp(item.appId);
         if (!target) throw new Error("app disappeared mid-rollout");
-        return updateApp(store, target, github(), { instruction: body.instruction! });
+        return updateApp(store, sessions, target, github(), {
+          instruction: body.instruction!,
+        });
       },
       {
         concurrency: body.concurrency ?? 4,

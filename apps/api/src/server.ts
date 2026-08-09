@@ -5,17 +5,21 @@ import { newRunId } from "@von/core";
 import { classifyChange } from "@von/release";
 import { createStore } from "./store.ts";
 import { githubCtx, startGenesis } from "./provision.ts";
-import { updateApp } from "./update.ts";
+import { previewChange } from "./update.ts";
+import { createPreviewSessions, startPreviewSweeper } from "./preview.ts";
 import { updateRoutes } from "./routes-update.ts";
 
 const store = createStore();
+const sessions = createPreviewSessions(store, githubCtx);
+startPreviewSweeper(sessions);
+
 const app = new Hono();
 
 app.use("*", cors());
 
-// The direct (non-chat) make-and-update surface: POST /v1/apps/:id/update and
-// POST /v1/fleet/update. Same code path as chat, no conversation required.
-app.route("/", updateRoutes(store, githubCtx));
+// The direct (non-chat) make-and-update surface: preview, publish, update and
+// fleet update. Same code path as chat, no conversation required.
+app.route("/", updateRoutes(store, githubCtx, sessions));
 
 app.get("/healthz", (c) => c.json({ ok: true }));
 
@@ -76,6 +80,10 @@ app.get("/v1/apps/:id/resources", async (c) => {
 /**
  * Chat — the product surface. Streams agent output as SSE so tokens appear as
  * they are produced rather than after the whole turn.
+ *
+ * A chat turn ends in a *preview*, never in a release. The user iterates as
+ * long as they like against a running copy of their app and then presses
+ * publish, which is `POST /v1/apps/:id/publish`.
  */
 app.post("/v1/apps/:id/chat", async (c) => {
   const appId = c.req.param("id");
@@ -89,8 +97,7 @@ app.post("/v1/apps/:id/chat", async (c) => {
     await stream.writeSSE({ event: "run.start", data: JSON.stringify({ runId }) });
 
     try {
-      // Same path the REST and fleet surfaces use — chat only adds streaming.
-      const result = await updateApp(store, target, githubCtx(), {
+      const result = await previewChange(sessions, target, {
         instruction: message,
         onEvent: (ev) => {
           // Fire-and-forget: the agent generator must not stall on the socket.
@@ -104,14 +111,18 @@ app.post("/v1/apps/:id/chat", async (c) => {
         },
       });
 
-      // The routing decision is part of the product surface: the user is told
-      // whether this lands in a minute or needs a new build.
+      // Both halves of the answer in one frame: what it looks like now, and
+      // what publishing it would cost — a minute for an OTA, ten for a build.
+      // The user decides with that in front of them, not after the fact.
       await stream.writeSSE({
-        event: "release",
+        event: "preview",
         data: JSON.stringify({
-          kind: result.ship?.decision.kind ?? "none",
+          url: result.previewUrl,
+          error: result.previewError,
+          kind: result.decision.kind,
           reason: result.summary,
-          commit: result.commitSha,
+          files: result.changedFiles,
+          publishable: result.changedFiles.length > 0,
         }),
       });
     } catch (err) {

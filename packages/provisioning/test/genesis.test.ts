@@ -28,7 +28,7 @@ function contextFor(overrides: Partial<GenesisInput> = {}): PlanContext {
     displayName: "Trail Notes",
     description: "log hikes",
     backendTier: "pooled",
-    deliveryMode: "shell",
+    deliveryMode: "standalone",
     poolProjectId: "von-pool-001",
     geminiApiKey: "g",
     expoToken: "e",
@@ -44,15 +44,29 @@ function activeSteps(ctx: PlanContext): string[] {
     .map((s) => s.id);
 }
 
-test("a pooled shell app provisions no GCP project", () => {
+test("a pooled standalone app provisions no GCP project", () => {
   const active = activeSteps(contextFor());
 
   // The default path. Anything here that touched project creation would put
   // 60-180s of long-running operations in front of a brand-new user.
-  assert.deepEqual(active, ["gcipTenant", "firestore", "repo", "easChannel", "secrets"]);
+  assert.deepEqual(active, [
+    "gcipTenant",
+    "firestore",
+    "repo",
+    "easProject",
+    "easChannel",
+    "secrets",
+  ]);
   for (const dedicatedOnly of ["firebaseProject", "firebaseWebApp", "anonAuth", "deploySa"]) {
     assert.ok(!active.includes(dedicatedOnly), `${dedicatedOnly} must be skipped`);
   }
+});
+
+test("shell delivery still skips the per-app EAS project", () => {
+  // Not the default any more (docs/ARCHITECTURE.md §12), but still supported —
+  // and the thing that distinguishes it is precisely that it has no EAS project.
+  const active = activeSteps(contextFor({ deliveryMode: "shell" }));
+  assert.deepEqual(active, ["gcipTenant", "firestore", "repo", "easChannel", "secrets"]);
 });
 
 test("a dedicated app provisions its own project and skips the pooled tenant", () => {
@@ -88,11 +102,11 @@ test("a shell app's update channel targets the shell project, not the account", 
   // Regression: this previously fell back to `accountId`, which is not a
   // project id — the default delivery path would have failed at channel
   // creation or created the channel against the wrong resource.
-  const shell = step.spec(contextFor());
+  const shell = step.spec(contextFor({ deliveryMode: "shell" }));
   assert.equal(shell.easProjectId, "shell_project_456");
   assert.notEqual(shell.easProjectId, deps.eas.accountId);
 
-  const standaloneCtx = contextFor({ deliveryMode: "standalone" });
+  const standaloneCtx = contextFor();
   standaloneCtx.outputs.easProject = { projectId: "own_project_789" };
   assert.equal(step.spec(standaloneCtx).easProjectId, "own_project_789");
 });
@@ -102,7 +116,9 @@ test("channel names come from the app id, never from user input", () => {
   const step = plan.steps.find((s) => s.id === "easChannel")!;
 
   // For a shell app the channel is the only thing separating its bundle from
-  // another tenant's, so a user-controlled name would be a tenancy bug.
+  // another tenant's, so a user-controlled name would be a tenancy bug. It
+  // stays derived for standalone apps too — the invariant should not depend on
+  // which delivery mode happens to be the default.
   const evil = step.spec(contextFor({ displayName: "../../other", slug: "../../other" }));
   assert.match(evil.channelName, /^app-[a-z0-9]+$/);
 });

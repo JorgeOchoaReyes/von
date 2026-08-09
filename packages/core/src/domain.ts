@@ -20,12 +20,17 @@ export type BackendTier = z.infer<typeof BackendTier>;
 /**
  * How the user's app reaches a real device.
  *
- * - `shell`  — the app runs inside Von's shared host binary via an EAS Update
- *              channel. No native build, arrives in ~1 min. Covers every
- *              JS/asset-only app.
  * - `standalone` — the app has its own EAS project, bundle id and binaries.
- *              Required for custom native modules, custom icon/splash on the
- *              home screen, and store submission.
+ *              One ~10 min build up front, then every change is a ~1 min OTA.
+ *              **This is the default** (docs/ARCHITECTURE.md §12).
+ * - `shell`  — the app runs inside Von's shared host binary via an EAS Update
+ *              channel. No native build at all, but pointing one binary at many
+ *              apps' update URLs requires `disableAntiBrickingMeasures`, which
+ *              means one bad bundle can brick the shell for that user — and the
+ *              shell's native module set is fixed for everyone in it.
+ *
+ * The instant-feedback gap standalone leaves is filled by the web preview, not
+ * by a shared binary: preview is free, reversible and per-app.
  */
 export const DeliveryMode = z.enum(["shell", "standalone"]);
 export type DeliveryMode = z.infer<typeof DeliveryMode>;
@@ -54,7 +59,7 @@ export const App = z.object({
   slug: z.string(),
   description: z.string().default(""),
   backendTier: BackendTier.default("pooled"),
-  deliveryMode: DeliveryMode.default("shell"),
+  deliveryMode: DeliveryMode.default("standalone"),
   /** Set once a dedicated Firebase project exists. */
   firebaseProjectId: z.string().nullable().default(null),
   /** Pooled apps get a GCIP tenant id inside the shared project. */

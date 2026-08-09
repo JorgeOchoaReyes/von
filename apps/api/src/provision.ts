@@ -77,9 +77,10 @@ function deps(): GenesisDeps {
       token: async () => need("EXPO_TOKEN"),
       accountId: need("EXPO_ACCOUNT_ID"),
       accountName: need("EXPO_ACCOUNT_NAME"),
-      // Von's shell app. Every pooled app's update channel is created on this
-      // project, since shell-delivered apps have no EAS project of their own.
-      shellProjectId: need("VON_SHELL_EAS_PROJECT_ID"),
+      // Von's shell app, if there is one. Standalone is the default delivery
+      // mode, so most deployments never set this; genesis fails loudly at the
+      // channel step if an app asks for shell delivery without it.
+      shellProjectId: process.env.VON_SHELL_EAS_PROJECT_ID,
     },
   };
 }

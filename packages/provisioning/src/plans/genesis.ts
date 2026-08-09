@@ -10,6 +10,7 @@ import {
   gcipTenantDriver,
   type GoogleAuth,
 } from "../drivers/google.ts";
+import { TerminalError } from "../driver.ts";
 import { repoDriver, repoSecretsDriver, type GitHubCtx } from "../drivers/github.ts";
 import { easChannelDriver, easProjectDriver, type EasCtx } from "../drivers/eas.ts";
 
@@ -74,13 +75,28 @@ const input = (ctx: PlanContext) => ctx.input as GenesisInput;
  *   DEPLOY.md §4.2  paste projectId into app.json  -> generator (not a step)
  *   DEPLOY.md §5.1  add EXPO_TOKEN secret          -> github.secret
  *
- * For a pooled + shell app — the default, and what a user gets seconds after
- * describing their app — only five steps run: `gcipTenant`, `firestore`,
- * `repo`, `easChannel`, `secrets`. Every step that creates or bills a GCP
- * project is skipped until the app is promoted. See test/genesis.test.ts,
- * which asserts exactly that list.
+ * For a pooled + standalone app — the default — six steps run: `gcipTenant`,
+ * `firestore`, `repo`, `easProject`, `easChannel`, `secrets`. Every step that
+ * creates or bills a GCP project is skipped until the app is promoted. See
+ * test/genesis.test.ts, which asserts exactly that list.
  */
 export function genesisPlan(deps: GenesisDeps): Plan {
+  /**
+   * The shell's EAS project, demanded only at the point a shell app needs it.
+   *
+   * Failing here rather than at startup keeps a standalone-only deployment
+   * bootable; failing loudly rather than falling back keeps the old bug dead —
+   * the fallback used to be `accountId`, which is not a project id at all.
+   */
+  const shellProject = (): string => {
+    if (!deps.eas.shellProjectId) {
+      throw new TerminalError(
+        "shell delivery needs VON_SHELL_EAS_PROJECT_ID; standalone apps do not",
+      );
+    }
+    return deps.eas.shellProjectId;
+  };
+
   const google = {
     auth: deps.google.auth,
     parent: deps.google.parent,
@@ -192,13 +208,12 @@ export function genesisPlan(deps: GenesisDeps): Plan {
       needs: ["easProject"],
       spec: (ctx) => ({
         appId: input(ctx).appId,
-        // Shell apps publish into the shell app's EAS project; standalone apps
-        // into their own. Either way the channel name is derived from the app
-        // id, never from anything user-supplied — for a shell app the channel
-        // is the only thing separating its bundle from another tenant's.
+        // Standalone apps publish into their own EAS project; shell apps into
+        // the shell's. Either way the channel name is derived from the app id,
+        // never from anything user-supplied — for a shell app the channel is
+        // the only thing separating its bundle from another tenant's.
         easProjectId:
-          (ctx.outputs.easProject?.projectId as string | undefined) ??
-          deps.eas.shellProjectId,
+          (ctx.outputs.easProject?.projectId as string | undefined) ?? shellProject(),
         channelName: `app-${input(ctx).appId.slice(-12)}`,
       }),
     },
