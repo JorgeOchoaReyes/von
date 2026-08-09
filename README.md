@@ -120,9 +120,12 @@ versions for nothing — invalidating every installed build's OTA channel.
 
 ```bash
 pnpm install
-pnpm test        # release classifier + generator guards
 pnpm typecheck
+pnpm test
 ```
+
+Both run in CI (`.github/workflows/ci.yml`) on every push to `master` and every
+pull request.
 
 ```bash
 pnpm --filter @von/api dev      # control plane on :8787
@@ -164,12 +167,13 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (89 tests overall)
+- OTA-vs-native classifier and blueprint token guard (103 tests overall)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
 - preview proxy — per-session origin, token-addressed, WebSocket upgrades for
   fast refresh
+- CI on every push and pull request — typecheck and tests across all packages
 - control plane, admin console, Expo chat client
 - pool allocator — sticky per app, never overfills, warns before capacity runs out
 

@@ -1,0 +1,43 @@
+name: CI
+
+# Every push to master and every pull request. The platform's own repo gets the
+# same gate the generated apps get — an agent writes most of the code here too,
+# and nothing should reach master on the strength of a local run alone.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A new push supersedes the run in flight for the same ref. Reviewers care about
+# the tip of the branch, not about a queue of stale runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version comes from `packageManager` in package.json, so CI and local
+      # development cannot drift apart.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22 is not a preference: the control plane and every package run
+          # TypeScript directly under --experimental-strip-types.
+          node-version: 22
+          cache: pnpm
+
+      # Frozen: a lockfile that does not match package.json is a failure to
+      # report, not something to quietly resolve on the runner.
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
