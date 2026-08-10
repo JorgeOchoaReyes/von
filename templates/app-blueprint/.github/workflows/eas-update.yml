@@ -31,7 +31,6 @@ on:
       - "apps/expo/app/**"
       - "apps/expo/src/**"
       - "apps/expo/assets/**"
-      - "packages/firebase/**"
 
 jobs:
   update:

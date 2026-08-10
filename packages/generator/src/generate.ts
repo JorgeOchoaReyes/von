@@ -39,6 +39,17 @@ export interface BlueprintVars extends Record<string, string | undefined> {
   DEFAULT_BRANCH?: string;
   EAS_PROJECT_ID: string;
   FIREBASE_PROJECT_ID: string;
+  /**
+   * The Firestore database the app's rules and indexes deploy to.
+   *
+   * `(default)` for a dedicated backend. For a pooled one it is the app's own
+   * named database, and getting this wrong is not a cosmetic error: with
+   * `firebase.json` naming no database, `deploy --only firestore:rules` writes
+   * to `(default)` in the *pool* project. Every pooled app would overwrite the
+   * same shared rules file, and none of them would have rules governing their
+   * own data.
+   */
+  FIRESTORE_DATABASE_ID: string;
   /** Control-plane URL the app fetches its runtime config from. */
   VON_API_URL: string;
 }

@@ -17,6 +17,7 @@ const vars = {
   DEFAULT_BRANCH: "main",
   EAS_PROJECT_ID: "eas-1",
   FIREBASE_PROJECT_ID: "trail-notes-abc123",
+  FIRESTORE_DATABASE_ID: "(default)",
   VON_API_URL: "https://api.von.app",
 };
 

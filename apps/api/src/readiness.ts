@@ -114,6 +114,13 @@ export function checkReadiness(): Readiness {
     capability("functions", "Handing generated apps a key for their Cloud Functions", [
       "GEMINI_API_KEY",
     ]),
+
+    // Promotion works without it — the caller has to accept a data reset —
+    // but "your documents can come with you" is off the table until a bucket
+    // exists, and discovering that mid-promotion is the wrong time.
+    capability("migration", "Copying an app's Firestore data when it is promoted", [
+      "VON_MIGRATION_BUCKET",
+    ]),
   ];
 
   const blockers = capabilities

@@ -256,6 +256,12 @@ export function genesisPlan(deps: GenesisDeps): Plan {
           FIREBASE_PROJECT_ID:
             (ctx.outputs.firebaseProject?.projectId as string | undefined) ??
             input(ctx).poolProjectId,
+          // Named, not `(default)`, for a pooled app: its data lives in its own
+          // database inside a shared project, and rules deployed to the default
+          // one would govern nothing it owns while trampling every other pooled
+          // app's rules on the way past.
+          FIRESTORE_DATABASE_ID:
+            (ctx.outputs.firestore?.databaseId as string | undefined) ?? "(default)",
           VON_API_URL: deps.apiUrl,
         },
       }),

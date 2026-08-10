@@ -126,6 +126,7 @@ test("hydration re-runs when the backend project changes", () => {
     SCHEME: "trail-notes",
     CHANNEL: "app-1",
     EAS_PROJECT_ID: "eas_1",
+    FIRESTORE_DATABASE_ID: "app-abcdefghijkl",
     VON_API_URL: "https://api.von.test",
   };
 

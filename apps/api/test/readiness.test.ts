@@ -20,6 +20,7 @@ const ALL = [
   "EXPO_ACCOUNT_NAME",
   "VON_PREVIEW_HOST",
   "GEMINI_API_KEY",
+  "VON_MIGRATION_BUCKET",
 ];
 
 /** Run with exactly the given environment, restoring whatever was there. */
