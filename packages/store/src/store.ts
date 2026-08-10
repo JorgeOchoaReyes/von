@@ -1,6 +1,7 @@
 import {
   App,
   newAppId,
+  newReleaseToken,
   Release,
   slugify,
   RuntimeConfig,
@@ -74,6 +75,7 @@ export function newApp(input: NewAppInput): App {
     easProjectId: null,
     channel: `app-${id.slice(-12)}`,
     runtimeVersion: "1.0.0",
+    releaseToken: newReleaseToken(),
     createdAt: now,
     updatedAt: now,
   };

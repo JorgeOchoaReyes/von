@@ -35,6 +35,12 @@ export interface GenesisInput extends Record<string, unknown> {
   geminiApiKey: string;
   /** Expo token the generated repo's workflows use. */
   expoToken: string;
+  /**
+   * The app's own callback token. Written into its repository so its CI can
+   * report a release outcome — and scoped to this app alone, because a
+   * repository holding the platform key could act on every other customer's.
+   */
+  releaseToken: string;
 }
 
 export interface GenesisDeps {
@@ -264,6 +270,11 @@ export function genesisPlan(deps: GenesisDeps): Plan {
         const secrets: Record<string, string> = {
           GEMINI_API_KEY: input(ctx).geminiApiKey,
           EXPO_TOKEN: input(ctx).expoToken,
+          // How the app's CI reports what its release did. Without these the
+          // release stays `queued` with no EAS update group, and rollback has
+          // nothing to republish.
+          VON_API_URL: deps.apiUrl,
+          VON_RELEASE_TOKEN: input(ctx).releaseToken,
         };
         // Only dedicated apps deploy their own functions, so only they need a
         // deploy credential. Pooled apps call the shared project's functions.

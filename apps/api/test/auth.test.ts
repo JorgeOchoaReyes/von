@@ -140,3 +140,20 @@ test("keys are read as a comma-separated list, trimmed", () => {
     assert.deepEqual(authOptionsFromEnv().keys, [KEY, "second-key"]);
   });
 });
+
+test("the release callback is exempt from the platform key, not open", async () => {
+  const app = new Hono();
+  app.use("*", requireApiKey({ keys: [KEY], allowAnonymous: false }));
+  app.all("*", (c) => c.json({ reached: true }));
+
+  // A generated repository cannot hold VON_API_KEYS — that key acts on every
+  // app — so this path carries the app's own release token instead, which the
+  // handler checks.
+  const res = await call(app, "/v1/apps/app_1/releases/rel_1/complete", { method: "POST" });
+  assert.equal(res.status, 200);
+
+  // The exemption must not widen to the rest of the release surface.
+  for (const path of ["/v1/apps/app_1/releases", "/v1/apps/app_1/rollback"]) {
+    assert.equal((await call(app, path)).status, 401, `${path} should stay protected`);
+  }
+});

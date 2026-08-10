@@ -214,6 +214,11 @@ export async function publishChange(
     return { appId: app.id, commitSha: null, ship: null, summary: "No changes were needed." };
   }
 
+  // The release id is minted before the dispatch, not after, because the
+  // workflow is told to report back against it. Deciding the id afterwards
+  // would leave the app's CI with nothing to name.
+  const releaseId = newReleaseId();
+
   const ship = await shipChange(
     pending,
     {
@@ -222,6 +227,7 @@ export async function publishChange(
       channel: app.channel,
       runtimeVersion: app.runtimeVersion,
       branch: PROD_BRANCH,
+      releaseId,
     },
     githubDispatcher(github),
   );
@@ -233,7 +239,10 @@ export async function publishChange(
   // Recorded whatever the outcome, including `none`. A release history with the
   // uninteresting entries filtered out is a history you cannot reason about —
   // and "the last thing that shipped" is exactly the question rollback asks.
-  await store.recordRelease(releaseRecord(app, pending.label ?? "", commitSha, ship));
+  await store.recordRelease({
+    ...releaseRecord(app, pending.label ?? "", commitSha, ship),
+    id: releaseId,
+  });
 
   // Cleared only after the dispatch succeeded: a failed dispatch leaves the
   // change pending and republishable rather than committed-but-never-shipped.

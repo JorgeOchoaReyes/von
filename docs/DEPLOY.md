@@ -236,6 +236,11 @@ description.
 | `von-pools` | The JSON above |
 | `von-pool-web-configs` | Firebase web config per pool project |
 
+Two more secrets are written *into each generated repository* by genesis, not
+created by you: `VON_API_URL` and `VON_RELEASE_TOKEN`. They are how the app's own
+CI reports what a release did — including the EAS update group, which is the only
+handle a rollback has on a published bundle.
+
 ```bash
 printf '%s' "$(openssl rand -hex 32)" | \
   gcloud secrets create von-api-keys --data-file=- --project "$VON_PROJECT"

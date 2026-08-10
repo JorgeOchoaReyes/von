@@ -71,6 +71,14 @@ export const App = z.object({
   channel: z.string().default("preview"),
   /** Bumped whenever a native-affecting change ships; gates OTA delivery. */
   runtimeVersion: z.string().default("1.0.0"),
+  /**
+   * Per-app secret the app's own CI presents when reporting a release outcome.
+   *
+   * Scoped to one app on purpose. The alternative — handing every generated
+   * repository the platform's API key — would let any one customer's workflow
+   * act on every other customer's app.
+   */
+  releaseToken: z.string().default(""),
   createdAt: z.number(),
   updatedAt: z.number(),
 });

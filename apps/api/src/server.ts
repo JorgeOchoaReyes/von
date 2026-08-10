@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
-import { newRunId } from "@von/core";
+import { BuildStatus, newRunId } from "@von/core";
 import { classifyChange } from "@von/release";
 import { authOptionsFromEnv, requireApiKey } from "./auth.ts";
 import { adoptedRepoReadiness, checkReadiness, logReadiness } from "./readiness.ts";
@@ -126,6 +126,54 @@ app.post("/v1/apps/:id/provision", async (c) => {
     return c.json(await store.getApp(target.id));
   } catch (err) {
     return c.json({ error: (err as Error).message }, 500);
+  }
+});
+
+/**
+ * A generated app's CI reporting what its release actually did.
+ *
+ * The publish path dispatches a workflow and cannot know the outcome — the EAS
+ * update group, which identifies a published bundle, only exists once the
+ * workflow has run. Without this callback every release stays `queued` with no
+ * group, and rollback has nothing to republish. It is the piece that makes undo
+ * real rather than theoretical.
+ *
+ * Authenticated by the app's **own** release token, not the platform API key:
+ * handing every generated repository the platform key would let one customer's
+ * workflow act on every other customer's app.
+ */
+app.post("/v1/apps/:id/releases/:releaseId/complete", async (c) => {
+  const target = await store.getApp(c.req.param("id"));
+  const presented = c.req.header("x-von-release-token")?.trim();
+
+  // Same answer for an unknown app and a wrong token: distinguishing them would
+  // confirm which app ids exist.
+  if (!target || !target.releaseToken || presented !== target.releaseToken) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const body = await c.req.json<{
+    status?: string;
+    updateGroup?: string;
+    artifactUrl?: string;
+  }>();
+
+  const status = BuildStatus.safeParse(body.status);
+  if (!status.success) {
+    return c.json({ error: `status must be one of ${BuildStatus.options.join(", ")}` }, 400);
+  }
+
+  try {
+    const updated = await store.updateRelease(c.req.param("releaseId"), {
+      status: status.data,
+      externalId: body.updateGroup ?? null,
+      artifactUrl: body.artifactUrl ?? null,
+    });
+    // Only the fields the workflow is allowed to set come back, so a compromised
+    // repo cannot read the rest of the record.
+    return c.json({ id: updated.id, status: updated.status });
+  } catch {
+    return c.json({ error: "not found" }, 404);
   }
 });
 

@@ -16,6 +16,14 @@ on:
         description: "EAS Update branch (matches the build channel)"
         type: string
         default: "{{CHANNEL}}"
+      release_id:
+        description: "Von release this run belongs to; reported back on finish"
+        type: string
+        required: false
+      app_id:
+        description: "Von app id"
+        type: string
+        default: "{{APP_ID}}"
   push:
     branches:
       - "{{DEFAULT_BRANCH}}"
@@ -58,5 +66,38 @@ jobs:
         run: pnpm turbo type-check
 
       - name: Publish OTA update
+        id: publish
         working-directory: apps/expo
-        run: eas update --branch "${{ inputs.branch || '{{CHANNEL}}' }}" --message "CI update ${{ github.sha }}" --non-interactive
+        run: |
+          set -euo pipefail
+          # --json gives the update group, which is the only handle on a
+          # published bundle — and therefore the only thing a rollback can
+          # republish. Without capturing it here, undo is impossible later.
+          out=$(eas update \
+            --branch "${{ inputs.branch || '{{CHANNEL}}' }}" \
+            --message "CI update ${{ github.sha }}" \
+            --json --non-interactive)
+          echo "$out"
+          group=$(echo "$out" | jq -r 'if type == "array" then .[0].group else .group end')
+          echo "group=$group" >> "$GITHUB_OUTPUT"
+
+      # Reported whatever happened, including failure: a release stuck at
+      # `queued` forever is indistinguishable from one still running, and the
+      # control plane would offer a rollback to a bundle that never published.
+      - name: Report the outcome to Von
+        if: always() && inputs.release_id != ''
+        env:
+          VON_API_URL: ${{ secrets.VON_API_URL }}
+          VON_RELEASE_TOKEN: ${{ secrets.VON_RELEASE_TOKEN }}
+          APP_ID: ${{ inputs.app_id || '{{APP_ID}}' }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          STATUS: ${{ job.status == 'success' && 'succeeded' || 'failed' }}
+          GROUP: ${{ steps.publish.outputs.group }}
+        run: |
+          set -euo pipefail
+          [ -n "$VON_API_URL" ] || { echo "VON_API_URL unset; skipping report"; exit 0; }
+          curl -fsS -X POST \
+            "$VON_API_URL/v1/apps/$APP_ID/releases/$RELEASE_ID/complete" \
+            -H "content-type: application/json" \
+            -H "x-von-release-token: $VON_RELEASE_TOKEN" \
+            -d "{\"status\":\"$STATUS\",\"updateGroup\":\"${GROUP:-}\"}" 

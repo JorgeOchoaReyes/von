@@ -39,6 +39,7 @@ function contextFor(overrides: Partial<GenesisInput> = {}): PlanContext {
     poolProjectId: "von-pool-001",
     geminiApiKey: "g",
     expoToken: "e",
+    releaseToken: "tok_release",
     ...overrides,
   };
   return { appId: input.appId, outputs: {}, input };

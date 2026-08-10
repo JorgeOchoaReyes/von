@@ -13,6 +13,7 @@ function recorder() {
 }
 
 const target = {
+  releaseId: "rel_1",
   appId: "app_1",
   repoFullName: "von-apps/trail-notes",
   channel: "app-abc123",

@@ -23,6 +23,15 @@ export interface ShipTarget {
   channel: string;
   runtimeVersion: string;
   branch: string;
+  /**
+   * The release record this dispatch belongs to, passed to the workflow so it
+   * can report back what actually happened.
+   *
+   * Without it a release stays `queued` forever with no EAS update group — and
+   * the group is the only handle on a published bundle, so rollback would have
+   * nothing to republish.
+   */
+  releaseId: string;
 }
 
 export interface ShipResult {
@@ -69,12 +78,16 @@ export async function shipChange(
   if (decision.kind === "ota") {
     await dispatcher.dispatch(target.repoFullName, OTA_WORKFLOW, target.branch, {
       branch: target.channel,
+      release_id: target.releaseId,
+      app_id: target.appId,
     });
     return { appId: target.appId, decision, dispatched: OTA_WORKFLOW, runtimeVersion };
   }
 
   await dispatcher.dispatch(target.repoFullName, NATIVE_WORKFLOW, target.branch, {
     profile: "preview",
+    release_id: target.releaseId,
+    app_id: target.appId,
   });
   return { appId: target.appId, decision, dispatched: NATIVE_WORKFLOW, runtimeVersion };
 }

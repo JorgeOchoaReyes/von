@@ -118,6 +118,7 @@ export async function startGenesis(
     deliveryMode: app.deliveryMode,
     geminiApiKey: process.env.GEMINI_API_KEY ?? "",
     expoToken: process.env.EXPO_TOKEN ?? "",
+    releaseToken: app.releaseToken,
   };
 
   const ctx: PlanContext = { appId: app.id, outputs: {}, input };
