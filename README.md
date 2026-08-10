@@ -239,7 +239,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (203 tests overall)
+- OTA-vs-native classifier and blueprint token guard (203 tests overall; the two UIs are typechecked and built, not unit-tested)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
@@ -255,6 +255,9 @@ Built and tested:
   update group a rollback needs
 - generated apps report a failed launch, attributed to the release the device is
   actually running — advisory only, never an automatic undo
+- both UIs surface it: the console lists every release with its crash count and
+  a rollback button, and the chat app interrupts with one when devices start
+  failing to open
 - `GET /v1/readiness` — every capability, and what each missing variable blocks
 - CI on every push and pull request; CD of both services to Cloud Run on
   green `master`, with a rollback path
@@ -273,9 +276,6 @@ Not built yet:
 - **Per-user identity.** The API-key gate authorises *callers*, not *tenants*;
   `tenantId` still comes from the request. A real multi-tenant boundary needs
   signed user tokens.
-- **Surfacing** the crash signal in the chat and console UIs. The signal is
-  collected and `GET /v1/apps/:id/health` answers "is this release in trouble,
-  and can it be undone" — but a person still has to ask.
 - pooled -> dedicated data migration
 - store submission (TestFlight / Play internal)
 

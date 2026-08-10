@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -10,13 +10,17 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { HealthBanner } from "../src/components/HealthBanner";
 import { PreviewPane } from "../src/components/PreviewPane";
 import { PublishBar } from "../src/components/PublishBar";
 import {
   createApp,
   discardPreview,
+  getHealth,
   publish,
+  rollback,
   streamChat,
+  type HealthInfo,
   type PreviewInfo,
   type ReleaseInfo,
 } from "../src/lib/client";
@@ -46,7 +50,38 @@ export default function ChatScreen() {
   const [activity, setActivity] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewInfo | null>(null);
   const [published, setPublished] = useState<ReleaseInfo | null>(null);
+  const [health, setHealth] = useState<HealthInfo | null>(null);
   const listRef = useRef<FlatList<Turn>>(null);
+
+  /**
+   * Poll for crash reports from the live release.
+   *
+   * Polled rather than pushed because the signal is slow and coarse by nature —
+   * devices report over minutes as users open the app — and a socket for
+   * something checked twice a minute is machinery without a purpose. It stops
+   * when there is no app yet.
+   */
+  useEffect(() => {
+    if (!appId) return;
+
+    let cancelled = false;
+    const check = () => {
+      getHealth(appId)
+        .then((h) => {
+          if (!cancelled) setHealth(h);
+        })
+        // Swallowed: a failed health check is not something to interrupt
+        // someone mid-sentence about.
+        .catch(() => {});
+    };
+
+    check();
+    const timer = setInterval(check, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [appId]);
 
   const append = (turn: Turn) => setTurns((t) => [...t, turn]);
 
@@ -119,6 +154,23 @@ export default function ChatScreen() {
     }
   }, [appId, publishing]);
 
+  const onRollback = useCallback(async () => {
+    if (!appId || publishing) return;
+    setPublishing(true);
+    try {
+      const summary = await rollback(appId);
+      append({ id: `r${Date.now()}`, role: "assistant", text: summary });
+      // Clear immediately so the banner does not linger against a release that
+      // is no longer live; the next poll refills it from the control plane.
+      setHealth(null);
+      setPublished(null);
+    } catch (err) {
+      append({ id: `r${Date.now()}`, role: "assistant", text: (err as Error).message });
+    } finally {
+      setPublishing(false);
+    }
+  }, [appId, publishing]);
+
   const onDiscard = useCallback(async () => {
     if (!appId || publishing) return;
     setPublishing(true);
@@ -143,6 +195,8 @@ export default function ChatScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
       keyboardVerticalOffset={90}
     >
+      <HealthBanner health={health} busy={publishing} onRollback={onRollback} />
+
       <View style={styles.previewPane}>
         <PreviewPane url={preview?.url ?? null} busy={busy} error={preview?.error} />
       </View>

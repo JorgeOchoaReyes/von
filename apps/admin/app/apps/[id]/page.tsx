@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
-import { getApp, getResources } from "@/lib/api";
+import { getApp, getHealth, getResources, listReleases } from "@/lib/api";
+import { RollbackPanel } from "./rollback";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +10,13 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
   const app = await getApp(id).catch(() => null);
   if (!app) notFound();
 
-  const resources = await getResources(id).catch(() => []);
+  // Fetched together: an operator looking at an app during an incident wants
+  // the whole picture in one render, not three spinners.
+  const [resources, releases, health] = await Promise.all([
+    getResources(id).catch(() => []),
+    listReleases(id).catch(() => []),
+    getHealth(id).catch(() => null),
+  ]);
 
   return (
     <>
@@ -57,6 +64,56 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
           </tbody>
         </table>
       </div>
+
+      <h2 style={{ fontSize: 17, marginTop: 32 }}>Releases</h2>
+      <p className="sub">
+        Every publish, newest first. An update reaches installed devices in about a
+        minute with no review step, so this is the record that makes undo possible.
+      </p>
+
+      {health ? <RollbackPanel appId={id} health={health} /> : null}
+
+      {releases.length === 0 ? (
+        <div className="empty">Nothing published yet.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Change</th>
+              <th>Kind</th>
+              <th>Status</th>
+              <th>Crashes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {releases.map((r) => (
+              <tr key={r.id}>
+                <td title={r.id}>{new Date(r.createdAt).toLocaleString()}</td>
+                <td>
+                  {r.isRollback ? <span className="pill">rollback</span> : null}{" "}
+                  {r.instruction || <span className="sub">—</span>}
+                  {r.rolledBackBy ? (
+                    <>
+                      <br />
+                      <span className="sub">undone by {r.rolledBackBy}</span>
+                    </>
+                  ) : null}
+                </td>
+                <td>
+                  <span className="pill">{r.kind}</span>
+                  <br />
+                  <span className="sub">rt {r.runtimeVersion}</span>
+                </td>
+                <td>
+                  <span className={`pill ${r.status}`}>{r.status}</span>
+                </td>
+                <td>{r.crashReports > 0 ? r.crashReports : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
       <h2 style={{ fontSize: 17, marginTop: 32 }}>Provisioned resources</h2>
       <p className="sub">

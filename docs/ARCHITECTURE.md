@@ -355,8 +355,16 @@ no stack trace, message or device identifier. Those would be user data flowing
 out of an app whose content the platform did not write, and the count alone
 does the job.
 
-What is left is surfacing it: the signal is collected, but a person still has to
-go and look.
+Both UIs surface it. The console lists every release with its crash count and a
+rollback button — a server action, so the API key never leaves the server and the
+page works without JavaScript, which during an incident is the right trade. The
+chat app polls and interrupts with a banner when devices start failing to open.
+
+The wording in both avoids certainty neither has. "N devices failed to open your
+app" is what the data supports; "your release is broken" is not, and the refusal
+text — *that was a native build* — is shown as prominently as the button,
+because during an incident knowing what you cannot do is as useful as the
+button.
 
 ---
 
