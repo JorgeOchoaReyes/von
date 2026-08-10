@@ -1,4 +1,6 @@
 import type { App } from "@von/core";
+import { GitWorkspace } from "@von/agent";
+import { PROD_BRANCH } from "@von/generator";
 import {
   genesisPlan,
   resolveRuntimeConfig,
@@ -6,28 +8,11 @@ import {
   type GenesisDeps,
   type GenesisInput,
   allocatePool,
-  InMemoryPoolStore,
   type GitHubCtx,
   type PlanContext,
   type PoolStore,
 } from "@von/provisioning";
 import type { Store } from "./store.ts";
-
-/**
- * Pool registry.
- *
- * In-memory for now, seeded from the environment. Production moves this behind
- * the same durable store as everything else, because `tryAssign` has to be a
- * conditional write to be safe under concurrent signups.
- */
-const pools: PoolStore = new InMemoryPoolStore(
-  JSON.parse(process.env.VON_POOLS ?? "[]") as Array<{
-    projectId: string;
-    used: number;
-    capacity: number;
-    accepting: boolean;
-  }>,
-);
 
 /**
  * Wire the provisioning plan to real credentials.
@@ -82,6 +67,20 @@ function deps(): GenesisDeps {
       // channel step if an app asks for shell delivery without it.
       shellProjectId: process.env.VON_SHELL_EAS_PROJECT_ID,
     },
+    // Git for the hydrate step. Injected rather than imported by the
+    // provisioning package, which has no business depending on the agent's
+    // workspace implementation.
+    hydrate: {
+      branch: PROD_BRANCH,
+      open: async (fullName: string, branch: string) => {
+        const ws = new GitWorkspace({ fullName, token: githubCtx().token, branch });
+        await ws.open();
+        return ws;
+      },
+    },
+    // Baked into every generated app as the URL it fetches its backend config
+    // from at boot, so it must be the control plane's *public* address.
+    apiUrl: need("VON_PUBLIC_URL"),
   };
 }
 
@@ -92,7 +91,11 @@ function deps(): GenesisDeps {
  * id and the ledger short-circuits steps that already reached `ready`, so a
  * retry after a crash resumes rather than duplicating.
  */
-export async function startGenesis(store: Store, app: App): Promise<void> {
+export async function startGenesis(
+  store: Store,
+  pools: PoolStore,
+  app: App,
+): Promise<void> {
   const d = deps();
 
   // Allocate a pool before the plan runs: it is a conditional write against

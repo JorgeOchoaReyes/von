@@ -19,6 +19,7 @@ export type ResourceKind =
   | "firebase.serviceaccount"
   | "gcip.tenant"
   | "github.repo"
+  | "github.hydrate"
   | "github.secret"
   | "eas.project"
   | "eas.channel";

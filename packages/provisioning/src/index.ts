@@ -3,5 +3,6 @@ export * from "./orchestrator.ts";
 export * from "./drivers/google.ts";
 export * from "./drivers/github.ts";
 export * from "./drivers/eas.ts";
+export * from "./drivers/hydrate.ts";
 export * from "./plans/genesis.ts";
 export * from "./pool.ts";

@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "{{APP_NAME}}",
+    "slug": "{{APP_SLUG}}",
+    "scheme": "{{SCHEME}}",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "plugins": ["expo-router"],
+    "ios": { "supportsTablet": true, "bundleIdentifier": "{{BUNDLE_ID}}" },
+    "android": { "package": "{{BUNDLE_ID}}" },
+    "web": { "bundler": "metro", "output": "single" },
+
+    "updates": {
+      "url": "https://u.expo.dev/{{EAS_PROJECT_ID}}",
+      "fallbackToCacheTimeout": 0
+    },
+    "runtimeVersion": { "policy": "appVersion" },
+
+    "extra": {
+      "eas": { "projectId": "{{EAS_PROJECT_ID}}" },
+      "vonApiUrl": "{{VON_API_URL}}",
+      "vonAppId": "{{APP_ID}}"
+    }
+  }
+}

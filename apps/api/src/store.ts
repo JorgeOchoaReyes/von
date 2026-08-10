@@ -1,89 +1,78 @@
 import {
-  InMemoryLedger,
-  newAppId,
-  slugify,
-  type App,
-  type ResourceLedger,
-  type RuntimeConfig,
-} from "@von/core";
+  FirestorePoolStore,
+  FirestoreStore,
+  InMemoryStore,
+  type Db,
+  type Store,
+} from "@von/store";
+import { InMemoryPoolStore, type Pool, type PoolStore } from "@von/provisioning";
+import { connectFirestore } from "./firestore.ts";
+
+export type { Store };
 
 /**
- * Control-plane persistence.
+ * Choose the control plane's persistence.
  *
- * In-memory for now so the whole platform runs with no external dependency.
- * The interface is what production swaps — Firestore in the platform's own
- * project is the natural choice, since the ledger's access pattern (get by
- * key, list by app) maps directly onto it.
+ * Firestore when the platform is configured for it, in-memory otherwise. The
+ * fallback is deliberately loud rather than silent: an in-memory ledger means a
+ * restart mid-genesis re-runs instead of resuming, and a re-run with no memory
+ * creates a *second* billable GCP project and orphans the first. That is fine
+ * on a laptop and expensive anywhere else, so it has to be visible in the logs
+ * of anything that boots that way.
  */
-export interface Store {
-  ledger: ResourceLedger;
-  createApp(input: { tenantId: string; name: string; description: string }): Promise<App>;
-  getApp(id: string): Promise<App | null>;
-  listApps(tenantId?: string): Promise<App[]>;
-  updateApp(id: string, patch: Partial<App>): Promise<App>;
-  putRuntimeConfig(cfg: RuntimeConfig): Promise<void>;
-  getRuntimeConfig(appId: string): Promise<RuntimeConfig | null>;
+export interface Persistence {
+  store: Store;
+  pools: PoolStore;
+  durable: boolean;
 }
 
-export function createStore(): Store {
-  const apps = new Map<string, App>();
-  const configs = new Map<string, RuntimeConfig>();
-  const ledger = new InMemoryLedger();
+export async function createPersistence(): Promise<Persistence> {
+  const db = await connectFirestore();
 
-  return {
-    ledger,
+  if (!db) {
+    console.warn(
+      "[store] no VON_FIRESTORE_PROJECT — running in memory. " +
+        "Apps, the resource ledger and pool assignments are lost on restart, " +
+        "and a re-run of provisioning will create duplicate cloud resources.",
+    );
+    return {
+      store: new InMemoryStore(),
+      pools: new InMemoryPoolStore(seedPools()),
+      durable: false,
+    };
+  }
 
-    async createApp({ tenantId, name, description }) {
-      const now = Date.now();
-      const id = newAppId();
-      const app: App = {
-        id,
-        tenantId,
-        name,
-        slug: slugify(name),
-        description,
-        // Pooled: usable in seconds, no GCP quota. Standalone: its own binary,
-        // so one app's bad bundle cannot brick another's. Promotion to a
-        // dedicated backend is an explicit later action; the web preview covers
-        // the wait for the first build.
-        backendTier: "pooled",
-        deliveryMode: "standalone",
-        firebaseProjectId: null,
-        gcipTenantId: null,
-        repoFullName: null,
-        easProjectId: null,
-        channel: `app-${id.slice(-12)}`,
-        runtimeVersion: "1.0.0",
-        createdAt: now,
-        updatedAt: now,
-      };
-      apps.set(id, app);
-      return app;
-    },
+  const pools = new FirestorePoolStore(db);
+  await seedDurablePools(pools);
 
-    async getApp(id) {
-      return apps.get(id) ?? null;
-    },
-
-    async listApps(tenantId) {
-      const all = [...apps.values()].sort((a, b) => b.createdAt - a.createdAt);
-      return tenantId ? all.filter((a) => a.tenantId === tenantId) : all;
-    },
-
-    async updateApp(id, patch) {
-      const existing = apps.get(id);
-      if (!existing) throw new Error(`no app ${id}`);
-      const next = { ...existing, ...patch, updatedAt: Date.now() };
-      apps.set(id, next);
-      return next;
-    },
-
-    async putRuntimeConfig(cfg) {
-      configs.set(cfg.appId, cfg);
-    },
-
-    async getRuntimeConfig(appId) {
-      return configs.get(appId) ?? null;
-    },
-  };
+  return { store: new FirestoreStore(db), pools, durable: true };
 }
+
+/** Pool registry seeded from configuration: `[{projectId, capacity, ...}]`. */
+function seedPools(): Pool[] {
+  const raw = process.env.VON_POOLS;
+  if (!raw) return [];
+
+  return (JSON.parse(raw) as Array<Partial<Pool>>).map((p) => ({
+    projectId: String(p.projectId),
+    used: Number(p.used ?? 0),
+    capacity: Number(p.capacity ?? 100),
+    accepting: p.accepting !== false,
+  }));
+}
+
+/**
+ * Create-if-absent, never overwrite. `used` is live state; rewriting it from
+ * configuration on every boot would tell the allocator an occupied pool is
+ * empty and let it fill past the Firestore database quota.
+ */
+async function seedDurablePools(pools: FirestorePoolStore): Promise<void> {
+  for (const pool of seedPools()) {
+    if (await pools.register(pool)) {
+      console.log(`[pools] registered ${pool.projectId} (capacity ${pool.capacity})`);
+    }
+  }
+}
+
+/** Exposed for the health endpoint, which reports what it is running on. */
+export type { Db };

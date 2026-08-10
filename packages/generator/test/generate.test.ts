@@ -72,3 +72,35 @@ test("an explicitly-undefined branch still falls back to master", () => {
   assert.match(files[0]!.contents, /branches: \["master"\]/);
   assert.equal(PROD_BRANCH, "master");
 });
+
+test("a value with quotes does not break the JSON it lands in", () => {
+  // APP_NAME is the user's own words — the first thing they typed into the
+  // chat. Written raw, `My "Todo" App` turns app.json into something that is no
+  // longer JSON, and the generated repo fails at `pnpm install`.
+  const files = generateRepo(
+    { "app.json": '{"name":"{{APP_NAME}}","slug":"{{APP_SLUG}}"}' },
+    { ...vars, APP_NAME: 'My "Todo" App \\ v2', APP_SLUG: "my-todo-app" },
+  );
+
+  const parsed = JSON.parse(files[0]!.contents) as { name: string; slug: string };
+  assert.equal(parsed.name, 'My "Todo" App \\ v2');
+  assert.equal(parsed.slug, "my-todo-app");
+});
+
+test("a newline in a name does not split the JSON either", () => {
+  const files = generateRepo(
+    { "app.json": '{"name":"{{APP_NAME}}"}' },
+    { ...vars, APP_NAME: "line one\nline two" },
+  );
+  assert.equal((JSON.parse(files[0]!.contents) as { name: string }).name, "line one\nline two");
+});
+
+test("non-JSON files are not escaped", () => {
+  // A workflow's branch trigger or a TSX string would be corrupted by JSON
+  // escaping, so it applies only where it is correct.
+  const files = generateRepo(
+    { "ci.yml": "branches: [{{DEFAULT_BRANCH}}]", "app.tsx": "// {{APP_NAME}}" },
+    { ...vars, APP_NAME: 'has "quotes"' },
+  );
+  assert.equal(files.find((f) => f.path === "app.tsx")!.contents, '// has "quotes"');
+});

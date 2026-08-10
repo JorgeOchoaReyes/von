@@ -1,0 +1,11 @@
+# Kept small on purpose: `gcloud run deploy --source .` uploads this directory
+# to Cloud Build, and node_modules alone is hundreds of megabytes that the
+# image rebuilds from the lockfile anyway.
+node_modules
+**/node_modules
+.git
+.github
+**/.next
+**/dist
+**/.expo
+*.log

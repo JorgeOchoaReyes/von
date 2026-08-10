@@ -517,7 +517,87 @@ status` would report a clean tree and classify every publish as a no-op. The
 pending change is cleared only after the dispatch succeeds, so a failed dispatch
 leaves the change republishable rather than committed-but-never-shipped.
 
-What is left to build: a **preview proxy**. Sessions serve on a loopback port,
-which is right for the machine running the control plane and useless for a
-phone. `VON_PREVIEW_BASE` is the hook — a public host that maps a session's
-path to its port.
+### Reaching a preview from a device
+
+A session's dev server binds to a loopback port. To reach it from a phone, each
+session is published at **its own origin** — `<token>.preview.von.app` — which
+the control plane proxies to that port.
+
+An origin per session, not a path prefix, and the reason is not cosmetic. Metro
+serves an index full of root-absolute references (`/index.bundle`,
+`/node_modules/...`, the HMR socket); under a prefix like `/p/<token>/` every
+one of them breaks, and `<base href>` does not fix root-absolute URLs. Giving a
+session a whole origin makes the proxy a pure pass-through — the app is served
+exactly as it would be on its own.
+
+It gets the security boundary right for free. Separate origins mean one
+customer's previewed code cannot read another's, and none of it can read the
+control plane's. The subdomain label *is* the credential: 128 bits of
+randomness, issued per session, dropped when the session closes, so a stale URL
+stops resolving rather than landing on whatever now occupies that port. An
+unknown token and an expired one get the same 404, because a distinguishable
+answer confirms which tokens exist.
+
+WebSocket upgrades are piped raw rather than re-issued through `fetch`, which
+cannot express an upgrade. Without that the preview loads once and never
+changes — fast refresh is the whole reason it feels instant after the first
+turn.
+
+What is left is operational, not code: `*.preview.<domain>` has to resolve to
+the control plane, with a wildcard certificate. `VON_PREVIEW_HOST` turns it on;
+unset, previews stay loopback-only and nothing is exposed.
+
+---
+
+## 14. Running it for real
+
+### Durability is not a nice-to-have here
+
+Provisioning is safe to retry *because* the ledger remembers what it already
+created (§7). With the ledger in memory, a restart between "GCP created the
+project" and "we recorded it" does not resume — it re-runs, and the re-run
+creates a **second** billable project and orphans the first. Losing the app
+list is annoying; losing the ledger costs money and leaves resources nobody can
+find.
+
+So the control plane's own state — apps, runtime configs, the ledger, and pool
+assignments — lives in Firestore in the platform project, in a named database
+kept apart from anything a customer app touches. `/healthz` reports `durable`,
+and CD fails a deploy that comes up without it: a control plane silently
+running in memory is a failed deploy, not a healthy one.
+
+Pool allocation is the one place where correctness needs more than a write.
+`tryAssign` reads the occupancy and takes a slot **inside a transaction**, so
+two signups arriving together cannot both see 99/100 and both commit — which
+would put the pool over its Firestore database quota and fail app creation for
+everyone assigned to it. The seed list in `VON_POOLS` is create-if-absent for
+the same reason: `used` is live state, and rewriting it from configuration on
+every boot would hand the allocator a pool it believes is empty.
+
+### The gate
+
+Every endpoint spends money — it creates GCP projects, GitHub repositories and
+EAS projects, and runs an agent against a key we pay for. Deployed without a
+gate, the first thing that finds it turns the platform into someone else's free
+build farm. So the control plane refuses to start without `VON_API_KEYS` once
+it is configured for deployment.
+
+Two endpoints stay open deliberately: `/healthz`, because a load balancer
+cannot hold a secret, and `/v1/apps/:id/runtime-config`, which returns a
+Firebase *web* config — the same values baked into every client binary, whose
+access control lives in Firestore rules and the GCIP tenant (§4).
+
+This authorises **callers, not tenants**. `tenantId` still arrives in the
+request, which is honest for a platform whose only clients are its own admin
+console and chat app, and insufficient the moment that stops being true.
+
+### One instance, for now
+
+The control plane runs at `--max-instances 1`. That is a correctness
+constraint: a preview session is a checkout plus a Metro process in *this*
+process's memory, so a second instance would answer a publish for a session it
+does not hold. The preview runner sits behind an interface precisely so those
+sessions can move to their own workers when scale demands it — at which point
+the rest of the system does not change.
+
+Operator setup is in [DEPLOY.md](DEPLOY.md).

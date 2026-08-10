@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
@@ -23,8 +24,10 @@ import { join } from "node:path";
  * file needs to know.
  */
 export interface RunningPreview {
-  /** URL a webview can load. */
+  /** Loopback URL of the dev server itself. */
   url: string;
+  /** Port it bound to. The proxy needs this; nothing outside should see it. */
+  port: number;
   stop(): Promise<void>;
 }
 
@@ -54,19 +57,67 @@ export async function freePort(): Promise<number> {
 export interface ExpoWebRunnerOptions {
   /** Path of the Expo app inside the repo. Matches the blueprint layout. */
   appDir?: string;
-  /**
-   * Turn a local port into the URL the *client* should load. The default is
-   * loopback, which only works when the viewer is on the same host. Anything
-   * real puts a reverse proxy in front and passes a function that returns the
-   * public URL for that port.
-   */
-  urlFor?: (port: number, appId: string) => string;
   /** How long to wait for Metro to answer before giving up. */
   readyTimeoutMs?: number;
+  /** How long to allow for installing the app's dependencies. */
+  installTimeoutMs?: number;
   /** Test seam: replaced with a stub in tests so nothing spawns Metro. */
   spawnServer?: (dir: string, port: number) => ChildProcess;
   probe?: (url: string) => Promise<boolean>;
+  /** Test seam for the dependency install. */
+  install?: (repoDir: string) => Promise<void>;
 }
+
+/**
+ * Install the app's dependencies before Metro is asked to bundle anything.
+ *
+ * A preview session starts from a fresh shallow clone, which has no
+ * `node_modules`. Without this, `expo start` exits immediately with a module
+ * resolution error and the preview never appears — and the failure looks like
+ * "Metro is broken" rather than "nothing was installed".
+ *
+ * Once per session, not once per turn: the checkout persists, so later turns
+ * skip straight to fast refresh. A turn that *adds* a dependency reinstalls,
+ * because a lockfile newer than the install is exactly the case where the
+ * bundle would otherwise fail on a package that is supposedly there.
+ */
+const defaultInstall = async (repoDir: string, timeoutMs: number): Promise<void> => {
+  const modules = join(repoDir, "node_modules");
+  const lock = join(repoDir, "pnpm-lock.yaml");
+
+  if (existsSync(modules) && statSync(modules).mtimeMs >= mtimeOr(lock, 0)) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("pnpm", ["install", "--prefer-offline"], {
+      cwd: repoDir,
+      env: { ...process.env, CI: "1" },
+      stdio: "ignore",
+    });
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`installing dependencies timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.once("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`pnpm install failed with code ${code ?? "null"}`));
+    });
+  });
+};
+
+const mtimeOr = (path: string, fallback: number): number => {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return fallback;
+  }
+};
 
 const defaultSpawn = (dir: string, port: number): ChildProcess =>
   spawn(
@@ -100,6 +151,13 @@ export class ExpoWebRunner implements PreviewRunner {
 
   async start(dir: string, opts: { appId: string }): Promise<RunningPreview> {
     const appDir = join(dir, this.opts.appDir ?? "apps/expo");
+
+    // Before anything else: a fresh clone has no node_modules, and Metro exits
+    // instantly without them.
+    const installTimeout = this.opts.installTimeoutMs ?? 300_000;
+    const install = this.opts.install ?? ((d: string) => defaultInstall(d, installTimeout));
+    await install(dir);
+
     const port = await freePort();
     const spawnServer = this.opts.spawnServer ?? defaultSpawn;
     const probe = this.opts.probe ?? defaultProbe;
@@ -129,10 +187,7 @@ export class ExpoWebRunner implements PreviewRunner {
     const deadline = Date.now() + (this.opts.readyTimeoutMs ?? 120_000);
     while (Date.now() < deadline) {
       if (exited) throw new Error(exited);
-      if (await probe(local)) {
-        const urlFor = this.opts.urlFor ?? ((p) => `http://127.0.0.1:${p}`);
-        return { url: urlFor(port, opts.appId), stop };
-      }
+      if (await probe(local)) return { url: local, port, stop };
       await new Promise((r) => setTimeout(r, 500));
     }
 

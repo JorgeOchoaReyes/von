@@ -19,6 +19,13 @@ const deps: GenesisDeps = {
     accountName: "von",
     shellProjectId: "shell_project_456",
   },
+  hydrate: {
+    branch: "master",
+    open: async () => {
+      throw new Error("not used in spec-only tests");
+    },
+  },
+  apiUrl: "https://api.von.test",
 };
 
 function contextFor(overrides: Partial<GenesisInput> = {}): PlanContext {
@@ -55,6 +62,7 @@ test("a pooled standalone app provisions no GCP project", () => {
     "repo",
     "easProject",
     "easChannel",
+    "hydrate",
     "secrets",
   ]);
   for (const dedicatedOnly of ["firebaseProject", "firebaseWebApp", "anonAuth", "deploySa"]) {
@@ -66,7 +74,14 @@ test("shell delivery still skips the per-app EAS project", () => {
   // Not the default any more (docs/ARCHITECTURE.md §12), but still supported —
   // and the thing that distinguishes it is precisely that it has no EAS project.
   const active = activeSteps(contextFor({ deliveryMode: "shell" }));
-  assert.deepEqual(active, ["gcipTenant", "firestore", "repo", "easChannel", "secrets"]);
+  assert.deepEqual(active, [
+    "gcipTenant",
+    "firestore",
+    "repo",
+    "easChannel",
+    "hydrate",
+    "secrets",
+  ]);
 });
 
 test("a dedicated app provisions its own project and skips the pooled tenant", () => {
@@ -136,4 +151,56 @@ test("only dedicated apps receive a Firebase deploy credential", () => {
   dedicatedCtx.outputs.repo = { fullName: "von-apps/trail-notes-ghijkl" };
   dedicatedCtx.outputs.deploySa = { privateKeyJson: '{"type":"service_account"}' };
   assert.ok("FIREBASE_SERVICE_ACCOUNT" in step.spec(dedicatedCtx).secrets);
+});
+
+test("hydration substitutes every per-app value the blueprint asks for", () => {
+  const plan = genesisPlan(deps);
+  const step = plan.steps.find((s) => s.id === "hydrate")!;
+
+  const ctx = contextFor();
+  ctx.outputs.repo = { fullName: "von-apps/trail-notes-ghijkl" };
+  ctx.outputs.easProject = { projectId: "eas_proj_1" };
+
+  const spec = step.spec(ctx);
+  assert.equal(spec.fullName, "von-apps/trail-notes-ghijkl");
+  assert.equal(spec.vars.APP_NAME, "Trail Notes");
+  assert.equal(spec.vars.APP_ID, "app_abcdefghijkl");
+  assert.equal(spec.vars.EAS_PROJECT_ID, "eas_proj_1");
+  assert.equal(spec.vars.VON_API_URL, "https://api.von.test");
+  // A pooled app's rules deploy against the pool project; only a dedicated one
+  // has a project of its own.
+  assert.equal(spec.vars.FIREBASE_PROJECT_ID, "von-pool-001");
+});
+
+test("a dedicated app hydrates against its own Firebase project", () => {
+  const plan = genesisPlan(deps);
+  const step = plan.steps.find((s) => s.id === "hydrate")!;
+
+  const ctx = contextFor({ backendTier: "dedicated" });
+  ctx.outputs.repo = { fullName: "von-apps/x" };
+  ctx.outputs.firebaseProject = { projectId: "trail-notes-ghijkl" };
+
+  assert.equal(step.spec(ctx).vars.FIREBASE_PROJECT_ID, "trail-notes-ghijkl");
+});
+
+test("the bundle id is derived, never taken from user input", () => {
+  const plan = genesisPlan(deps);
+  const step = plan.steps.find((s) => s.id === "hydrate")!;
+
+  const ctx = contextFor({ slug: "../../evil app!" });
+  ctx.outputs.repo = { fullName: "von-apps/x" };
+
+  // A bundle id is immutable once published and ends up in a manifest, a store
+  // listing and a deep-link scheme.
+  assert.match(step.spec(ctx).vars.BUNDLE_ID, /^app\.von\.[a-z0-9]*$/);
+});
+
+test("secrets wait for hydration, so CI never runs against a template", () => {
+  const plan = genesisPlan(deps);
+  const secrets = plan.steps.find((s) => s.id === "secrets")!;
+
+  // Adding EXPO_TOKEN is what makes the repo's workflows able to publish. If
+  // that landed before substitution, a push could trigger a build of a tree
+  // still full of {{TOKEN}} placeholders.
+  assert.ok(secrets.needs?.includes("hydrate"));
 });

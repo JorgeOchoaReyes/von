@@ -1,0 +1,273 @@
+name: CD
+
+# Deploy on green master only. `workflow_run` rather than a plain push trigger
+# so a commit that fails typecheck or tests never reaches production — with two
+# independent workflows on `push`, CD would race CI and usually win.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  # Manual redeploy: rolling back to a known-good commit, or re-running a deploy
+  # that failed for an infrastructure reason.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit or branch to deploy
+        required: false
+        default: master
+
+concurrency:
+  group: cd-production
+  # Never cancel a deploy in flight: a half-applied rollout is worse than a
+  # queued one.
+  cancel-in-progress: false
+
+env:
+  REGISTRY_REPO: von
+
+jobs:
+  api:
+    name: control plane -> Cloud Run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # A failed CI run still fires workflow_run; only a successful one deploys.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    environment: production
+
+    permissions:
+      contents: read
+      # Workload Identity Federation, the whole point of which is that no
+      # long-lived service account key exists to leak.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Deploy the commit CI actually validated, not whatever master points
+          # at by the time this job starts.
+          ref: >-
+            ${{ github.event_name == 'workflow_dispatch'
+                && inputs.ref
+                || github.event.workflow_run.head_sha }}
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push
+        id: image
+        env:
+          PROJECT: ${{ secrets.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+        run: |
+          set -euo pipefail
+
+          # An explicit build rather than `gcloud run deploy --source .`: that
+          # looks for a Dockerfile at the source root and falls back to
+          # buildpacks when it finds none. This repo has two apps and therefore
+          # two Dockerfiles, neither of them at the root.
+          #
+          # Tagged by commit, never `latest`, so a rollback names an exact image
+          # instead of hoping a mutable tag still points where you think.
+          image="${REGION}-docker.pkg.dev/${PROJECT}/${REGISTRY_REPO}/api:${GITHUB_SHA}"
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build -f apps/api/Dockerfile -t "$image" .
+          docker push "$image"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy
+        env:
+          PROJECT: ${{ secrets.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+          RUNTIME_SA: ${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          FIRESTORE_DATABASE: ${{ vars.VON_FIRESTORE_DATABASE || 'von-control' }}
+          PREVIEW_HOST: ${{ vars.VON_PREVIEW_HOST }}
+          PUBLIC_URL: ${{ vars.VON_PUBLIC_URL }}
+          GITHUB_ORG: ${{ vars.VON_GITHUB_ORG }}
+          TEMPLATE_REPO: ${{ vars.VON_TEMPLATE_REPO }}
+          GCP_PARENT: ${{ vars.GCP_PARENT }}
+          EXPO_ACCOUNT_ID: ${{ vars.EXPO_ACCOUNT_ID }}
+          EXPO_ACCOUNT_NAME: ${{ vars.EXPO_ACCOUNT_NAME }}
+        run: |
+          set -euo pipefail
+
+          # Built in the shell rather than as a folded YAML string: folding turns
+          # newlines into spaces, and " VON_PREVIEW_HOST" is not a variable name.
+          # `^|^` switches gcloud's delimiter to `|` so values containing commas
+          # — VON_POOLS is JSON — survive intact.
+          env_vars="^|^"
+          env_vars+="VON_FIRESTORE_PROJECT=${PROJECT}"
+          env_vars+="|VON_FIRESTORE_DATABASE=${FIRESTORE_DATABASE}"
+          env_vars+="|VON_PREVIEW_HOST=${PREVIEW_HOST}"
+          env_vars+="|VON_PUBLIC_URL=${PUBLIC_URL}"
+          env_vars+="|VON_GITHUB_ORG=${GITHUB_ORG}"
+          env_vars+="|VON_TEMPLATE_REPO=${TEMPLATE_REPO}"
+          env_vars+="|GCP_PARENT=${GCP_PARENT}"
+          env_vars+="|GCP_LOCATION=${REGION}"
+          env_vars+="|EXPO_ACCOUNT_ID=${EXPO_ACCOUNT_ID}"
+          env_vars+="|EXPO_ACCOUNT_NAME=${EXPO_ACCOUNT_NAME}"
+
+          # Credentials stay in Secret Manager and are mounted by name. Passing
+          # them through here would put every one of them in this job's command
+          # line and in the Cloud Run service description.
+          secrets="^|^"
+          secrets+="VON_API_KEYS=von-api-keys:latest"
+          secrets+="|ANTHROPIC_API_KEY=anthropic-api-key:latest"
+          secrets+="|GITHUB_INSTALLATION_TOKEN=github-installation-token:latest"
+          secrets+="|EXPO_TOKEN=expo-token:latest"
+          secrets+="|GEMINI_API_KEY=gemini-api-key:latest"
+          secrets+="|GCP_BILLING_ACCOUNT=gcp-billing-account:latest"
+          secrets+="|VON_POOLS=von-pools:latest"
+          secrets+="|VON_POOL_WEB_CONFIGS=von-pool-web-configs:latest"
+
+          gcloud run deploy von-api \
+            --image "$IMAGE" \
+            --project "$PROJECT" \
+            --region "$REGION" \
+            --platform managed \
+            --service-account "$RUNTIME_SA" \
+            --port 8787 \
+            --timeout 3600 \
+            --cpu 2 \
+            --memory 4Gi \
+            --min-instances 1 \
+            --max-instances 1 \
+            --set-env-vars "$env_vars" \
+            --set-secrets "$secrets" \
+            --labels "commit=${GITHUB_SHA::12}" \
+            --allow-unauthenticated
+          # --allow-unauthenticated is deliberate and is *not* an open door: the
+          # service gates itself on VON_API_KEYS, and two things have to be
+          # publicly reachable — /healthz for probes, and the preview origins,
+          # loaded by a webview that cannot present a Google identity.
+          #
+          # --max-instances 1 is a correctness constraint, not a cost decision.
+          # A preview session is a checkout plus a Metro process held in *this*
+          # process's memory, so a second instance would answer a publish for a
+          # session it does not have. Scaling out means moving preview sessions
+          # to their own workers first.
+
+      - name: Verify the deployment is serving
+        env:
+          PROJECT: ${{ secrets.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe von-api \
+            --project "$PROJECT" --region "$REGION" --format 'value(status.url)')
+          echo "deployed: $url"
+
+          # /healthz is unauthenticated so a probe needs no secret, and it
+          # reports `durable` — a control plane that silently fell back to
+          # in-memory persistence is a failed deploy, not a healthy one.
+          body=$(curl -fsS --retry 5 --retry-all-errors --retry-delay 5 "$url/healthz")
+          echo "$body"
+          echo "$body" | grep -q '"durable":true' \
+            || { echo "::error::control plane is running without durable storage"; exit 1; }
+
+  admin:
+    name: console -> Cloud Run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # After the control plane, not beside it. The console is a client; bringing
+    # it up first against an older API is a window where it renders errors.
+    needs: api
+
+    environment: production
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: >-
+            ${{ github.event_name == 'workflow_dispatch'
+                && inputs.ref
+                || github.event.workflow_run.head_sha }}
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push
+        id: image
+        env:
+          PROJECT: ${{ secrets.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+        run: |
+          set -euo pipefail
+          image="${REGION}-docker.pkg.dev/${PROJECT}/${REGISTRY_REPO}/admin:${GITHUB_SHA}"
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build -f apps/admin/Dockerfile -t "$image" .
+          docker push "$image"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy
+        env:
+          PROJECT: ${{ secrets.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+          RUNTIME_SA: ${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          set -euo pipefail
+
+          # The console reaches the control plane at its own URL, resolved here
+          # rather than configured, so the two cannot drift apart.
+          api_url=$(gcloud run services describe von-api \
+            --project "$PROJECT" --region "$REGION" --format 'value(status.url)')
+          echo "console will call: $api_url"
+
+          gcloud run deploy von-admin \
+            --image "$IMAGE" \
+            --project "$PROJECT" \
+            --region "$REGION" \
+            --platform managed \
+            --service-account "$RUNTIME_SA" \
+            --port 3000 \
+            --cpu 1 \
+            --memory 512Mi \
+            --min-instances 0 \
+            --max-instances 3 \
+            --set-env-vars "VON_API_URL=${api_url}" \
+            --set-secrets "VON_API_KEY=von-admin-api-key:latest" \
+            --labels "commit=${GITHUB_SHA::12}" \
+            --no-allow-unauthenticated
+          # --no-allow-unauthenticated, unlike the control plane: this is *your*
+          # console, it holds a key that can create billable resources, and
+          # nothing about it needs an anonymous client. Reach it through IAP or
+          # `gcloud run services proxy`.
+          #
+          # It scales to zero and runs several instances freely — unlike the
+          # control plane, it holds no in-process session state.
+
+      - name: Verify the console is serving
+        env:
+          PROJECT: ${{ secrets.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe von-admin \
+            --project "$PROJECT" --region "$REGION" --format 'value(status.url)')
+          echo "deployed: $url"
+
+          # The service requires authentication, so the probe presents an
+          # identity token rather than expecting an anonymous 200.
+          curl -fsS -o /dev/null --retry 5 --retry-all-errors --retry-delay 5 \
+            -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$url/"

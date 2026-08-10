@@ -1,7 +1,8 @@
 import type { GitWorkspace } from "@von/agent";
-import { ExpoWebRunner, PreviewSessions } from "@von/preview";
+import { ExpoWebRunner, PreviewSessions, previewUrl } from "@von/preview";
 import type { GitHubCtx } from "@von/provisioning";
 import type { Store } from "./store.ts";
+import { previewHost } from "./proxy.ts";
 import { openWorkspace } from "./update.ts";
 
 /**
@@ -10,29 +11,26 @@ import { openWorkspace } from "./update.ts";
  * One per process, because a session owns a checkout and a dev server and both
  * must be shared across the requests that make up one conversation.
  *
- * `VON_PREVIEW_BASE` is what makes a preview reachable from a phone. Without it
- * the URL is loopback, which is right for local development and useless for a
- * device — so the default is honest rather than convenient, and production sets
- * a proxy that maps a public host to the session's port.
+ * `VON_PREVIEW_HOST` is what makes a preview reachable from a phone: each
+ * session is served at `<token>.<host>`, proxied to its loopback port. Without
+ * it the URL stays loopback — right for the machine running the control plane,
+ * useless from a device. The default is honest rather than convenient.
  */
 export function createPreviewSessions(
   store: Store,
   github: () => GitHubCtx,
 ): PreviewSessions<GitWorkspace> {
-  const base = process.env.VON_PREVIEW_BASE;
-
-  const runner = new ExpoWebRunner({
-    urlFor: (port, appId) =>
-      base ? `${base.replace(/\/$/, "")}/p/${appId}/${port}/` : `http://127.0.0.1:${port}`,
-  });
+  const host = previewHost();
+  const scheme = process.env.VON_PREVIEW_SCHEME ?? "https";
 
   return new PreviewSessions<GitWorkspace>({
-    runner,
+    runner: new ExpoWebRunner(),
     open: async (appId) => {
       const app = await store.getApp(appId);
       if (!app) throw new Error(`no app ${appId}`);
       return openWorkspace(app, github());
     },
+    publicUrl: host ? ({ token }) => previewUrl(host, token, scheme) : undefined,
     idleMs: Number(process.env.VON_PREVIEW_IDLE_MS ?? 30 * 60_000),
     maxSessions: Number(process.env.VON_PREVIEW_MAX_SESSIONS ?? 24),
   });

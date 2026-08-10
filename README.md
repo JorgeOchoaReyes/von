@@ -29,9 +29,12 @@ packages/
   release/      OTA-vs-native diff classifier.
   agent/        The Claude agent that edits a generated app's repo.
   preview/      Live preview sessions — a checkout plus a dev server per app.
+  store/        Durable persistence: apps, resource ledger, pool assignments.
   generator/    Blueprint -> a parameterised, per-app monorepo.
 templates/
-  app-blueprint/  The ByteLearning stack with per-app values templated out.
+  app-blueprint/  A complete Expo + Firebase monorepo with per-app values as
+                  {{TOKENS}}. Push this to its own repo and mark it a template;
+                  genesis copies it and `hydrate` substitutes the values.
 ```
 
 `apps/chat` is app #0 — it is generated from the same blueprint and shipped
@@ -88,6 +91,12 @@ seconds to boot and every turn after it fast-refreshes in place. Sessions are
 capped and swept on idle — each one is a customer's repo on disk plus a
 process.
 
+Each session is served at its own origin, `<token>.$VON_PREVIEW_HOST`, proxied
+to its loopback port (including the WebSocket upgrade, which is what makes fast
+refresh work). An origin rather than a path prefix because Metro serves
+root-absolute URLs that no prefix rewrite survives — and because separate
+origins keep one customer's previewed code from reading another's.
+
 | Surface | How |
 |---|---|
 | Chat | `POST /v1/apps/:id/chat` — streams the turn, ends in a preview |
@@ -114,9 +123,15 @@ versions for nothing — invalidating every installed build's OTA channel.
 
 ```bash
 pnpm install
-pnpm test        # release classifier + generator guards
 pnpm typecheck
+pnpm test
 ```
+
+Both run in CI (`.github/workflows/ci.yml`) on every push to `master` and every
+pull request. On green `master`, CD (`.github/workflows/cd.yml`) deploys the
+control plane and the console to Cloud Run, images tagged by commit so a
+rollback names an exact one. **[`docs/DEPLOY.md`](docs/DEPLOY.md)** is the
+operator's checklist — every credential, in the order you need it.
 
 ```bash
 pnpm --filter @von/api dev      # control plane on :8787
@@ -124,15 +139,33 @@ pnpm --filter @von/admin dev    # admin console on :3000
 pnpm --filter @von/chat  dev    # Expo chat app
 ```
 
-The control plane runs with an in-memory store and needs no credentials until
-you provision something real.
+**The fastest way to see it work** is `docs/DEPLOY.md` §0: with an Anthropic key
+and a GitHub token, create an app that *adopts* an existing repository
+(`POST /v1/apps` with `repoFullName`) and drive chat → preview → publish against
+it. That skips provisioning entirely — no billing account, no Expo org, no DNS —
+because the loop only needs a repo it can clone and push to.
+
+The control plane runs with an in-memory store, with authentication off, and
+says so on startup. Setting `VON_FIRESTORE_PROJECT` or `VON_PREVIEW_HOST` puts
+it in deployment mode, where a missing `VON_API_KEYS` is a startup error rather
+than an open door.
+
+`GET /v1/readiness` reports which capabilities are configured and what each gap
+blocks — credentials arrive in stages, and the alternative is finding out from a
+stack trace in a background task.
 
 ### Credentials for real provisioning
 
 All platform-owned. Users supply none of these — that is the point.
 
+See [`docs/DEPLOY.md`](docs/DEPLOY.md) for how each one is created and which
+are Secret Manager entries versus repository variables.
+
 | Variable | What it is |
 |---|---|
+| `VON_API_KEYS` | Comma-separated keys that may call the control plane. Required once deployed |
+| `VON_FIRESTORE_PROJECT` / `VON_FIRESTORE_DATABASE` | Where the app list and resource ledger live |
+| `VON_PUBLIC_URL` | Public address of the control plane, baked into every generated app |
 | `ANTHROPIC_API_KEY` | Powers the build agent |
 | `GOOGLE_ACCESS_TOKEN` | Provisioner service account (ADC in production) |
 | `GCP_PARENT` | Folder/org new projects are created under, e.g. `folders/123` |
@@ -144,7 +177,7 @@ All platform-owned. Users supply none of these — that is the point.
 | `VON_TEMPLATE_REPO` | `owner/repo` of the blueprint, marked as a template |
 | `EXPO_TOKEN` / `EXPO_ACCOUNT_ID` / `EXPO_ACCOUNT_NAME` | Platform's Expo org |
 | `GEMINI_API_KEY` | Handed to generated apps' Cloud Functions |
-| `VON_PREVIEW_BASE` | Public base URL of the preview proxy; without it previews are loopback-only |
+| `VON_PREVIEW_HOST` | Wildcard preview host, e.g. `preview.von.app`; without it previews are loopback-only |
 | `VON_SHELL_EAS_PROJECT_ID` | *Optional.* Only needed if an app asks for shell delivery |
 
 ---
@@ -158,21 +191,36 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (89 tests overall)
+- OTA-vs-native classifier and blueprint token guard (176 tests overall)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
+- preview proxy — per-session origin, token-addressed, WebSocket upgrades for
+  fast refresh
+- durable Firestore persistence — apps, resource ledger, and pool assignment as
+  a real conditional write
+- API-key gate that refuses to run open once deployed
+- adopt-an-existing-repo, so the product loop runs on two tokens
+- `GET /v1/readiness` — every capability, and what each missing variable blocks
+- CI on every push and pull request; CD of both services to Cloud Run on
+  green `master`, with a rollback path
 - control plane, admin console, Expo chat client
 - pool allocator — sticky per app, never overfills, warns before capacity runs out
 
 Not built yet:
 
-- **A preview proxy.** Sessions serve on a loopback port; reaching one from a
-  phone needs a public host mapped to that port (`VON_PREVIEW_BASE`). Until
-  then previews work on the machine running the control plane.
+- **Wildcard DNS and a certificate for `VON_PREVIEW_HOST`.** The proxy is
+  built; it needs `*.preview.<domain>` pointed at the control plane. Without it
+  previews stay loopback-only, which works on the machine running the control
+  plane and nowhere else.
+- **Horizontal scale.** Preview sessions live in the control plane's memory, so
+  it runs at one instance. Scaling out means moving sessions to their own
+  workers — the runner is behind an interface for exactly that.
+- **Per-user identity.** The API-key gate authorises *callers*, not *tenants*;
+  `tenantId` still comes from the request. A real multi-tenant boundary needs
+  signed user tokens.
 - **Post-update checks** — watching for a crash spike on a new runtime and
   offering a rollback (EAS Update does this by republishing the prior bundle).
-- Firestore-backed store (everything is in-memory today)
 - pooled -> dedicated data migration
 - store submission (TestFlight / Play internal)
 
