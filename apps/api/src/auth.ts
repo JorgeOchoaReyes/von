@@ -16,7 +16,7 @@ import type { MiddlewareHandler } from "hono";
  * boundary needs signed user tokens, and that is a larger change than this
  * file should pretend to make.
  *
- * Three paths are exempt from the platform key, each for its own reason:
+ * Four paths are exempt from the platform key, each for its own reason:
  *
  *   - `/healthz`, because a load balancer cannot hold a secret.
  *   - `/v1/apps/:id/runtime-config`, which is documented as public: it returns a
@@ -27,6 +27,9 @@ import type { MiddlewareHandler } from "hono";
  *     report a release outcome. It is not open — it authenticates with that
  *     app's own release token, which is the point: a repository holding the
  *     platform key could act on every other customer's app.
+ *   - `/v1/apps/:id/crash`, which installed apps post to when they fail to
+ *     launch. This one *is* open, because a client app has no secret to hold.
+ *     It only increments an advisory counter; nothing acts on it unattended.
  */
 
 const PUBLIC_PATHS = [
@@ -36,6 +39,10 @@ const PUBLIC_PATHS = [
   // own release token, which the handler checks. A generated repository cannot
   // hold VON_API_KEYS — that key can act on every app.
   /^\/v1\/apps\/[^/]+\/releases\/[^/]+\/complete$/,
+  // Installed apps reporting a failed launch. Genuinely unauthenticated — a
+  // client holds no secret — which is exactly why the count it feeds is
+  // advisory and never triggers an automatic rollback.
+  /^\/v1\/apps\/[^/]+\/crash$/,
 ];
 
 /** Constant-time compare, so a wrong key cannot be found byte by byte. */

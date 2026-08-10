@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { BuildStatus, newRunId } from "@von/core";
-import { classifyChange } from "@von/release";
+import { assessHealth, attributeCrash, classifyChange } from "@von/release";
 import { authOptionsFromEnv, requireApiKey } from "./auth.ts";
 import { adoptedRepoReadiness, checkReadiness, logReadiness } from "./readiness.ts";
 import { createPersistence } from "./store.ts";
@@ -175,6 +175,56 @@ app.post("/v1/apps/:id/releases/:releaseId/complete", async (c) => {
   } catch {
     return c.json({ error: "not found" }, 404);
   }
+});
+
+/**
+ * An installed app reporting that it failed to start.
+ *
+ * The other half of rollback. Undo is one call, but nobody is watching: an OTA
+ * lands on every device in about a minute, and if it crashes on launch the
+ * person best placed to notice is holding an app that will not open. So the app
+ * reports for itself.
+ *
+ * Unauthenticated, because a client app holds no secret worth the name —
+ * anything shipped in a bundle is readable by whoever has the bundle. That is
+ * precisely why the count only ever *raises a question* with whoever published
+ * the change. Nothing here rolls anything back.
+ */
+app.post("/v1/apps/:id/crash", async (c) => {
+  const appId = c.req.param("id");
+  const target = await store.getApp(appId);
+  if (!target) return c.json({ error: "not found" }, 404);
+
+  const body = await c.req.json<{ runtimeVersion?: string; updateGroup?: string }>();
+  if (!body.runtimeVersion) return c.json({ error: "runtimeVersion is required" }, 400);
+
+  const releases = await store.listReleases(appId);
+  const blamed = attributeCrash(releases, {
+    runtimeVersion: body.runtimeVersion,
+    updateGroup: body.updateGroup ?? null,
+  });
+
+  // Dropped rather than guessed. A signal put on the wrong release would show a
+  // crash count against a bundle that is fine, and invite undoing it.
+  if (!blamed) return c.json({ recorded: false, reason: "no matching release" }, 202);
+
+  const updated = await store.incrementCrashReports(blamed.id);
+  console.warn(
+    `[health] ${appId} crash on ${blamed.id} (${updated.crashReports} total)`,
+  );
+  return c.json({ recorded: true }, 202);
+});
+
+/**
+ * Is the newest release in trouble, and can it be undone?
+ *
+ * Both halves in one response on purpose: a UI that asks "is this bad?" and
+ * "can I undo it?" separately ends up showing a button that fails when pressed.
+ */
+app.get("/v1/apps/:id/health", async (c) => {
+  const appId = c.req.param("id");
+  if (!(await store.getApp(appId))) return c.json({ error: "not found" }, 404);
+  return c.json(assessHealth(await store.listReleases(appId)));
 });
 
 /**

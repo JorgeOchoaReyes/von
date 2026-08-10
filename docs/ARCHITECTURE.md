@@ -329,9 +329,34 @@ Two refusals matter more than the happy path:
   would either target devices that cannot run it or silently reach nobody while
   reporting success.
 
-Still missing: **noticing**. The rollback is one call, but a human has to decide
-to make it. Watching for a crash spike or a failed launch on a new runtime, and
-offering the undo unprompted, is the remaining half.
+### Noticing
+
+Undo is one call, but nobody is watching. An update lands on every installed
+device in about a minute; if it crashes on launch, the person best placed to
+notice is holding an app that will not open. So the app reports for itself: a
+fatal error posts one signal naming the build it was running, and the control
+plane attributes it to the release those devices are actually on — by update
+group when the client knows it, by runtime version otherwise. A signal that
+matches nothing is dropped rather than guessed, because a crash count on a
+bundle that is fine invites undoing it.
+
+`GET /v1/apps/:id/health` answers both halves at once — is this release in
+trouble, and can it be undone — because a UI that asks separately ends up
+showing a button that fails when pressed.
+
+**The counts are advisory and never trigger an automatic rollback.** The
+endpoint cannot be authenticated: a client app holds no secret worth the name,
+since anything in a bundle is readable by whoever has it. So the numbers can be
+inflated by anyone who cares to. They are enough to raise a question with the
+person who published the change, and nowhere near enough to act on unattended.
+
+The report is deliberately thin — that a launch failed, and which build — with
+no stack trace, message or device identifier. Those would be user data flowing
+out of an app whose content the platform did not write, and the count alone
+does the job.
+
+What is left is surfacing it: the signal is collected, but a person still has to
+go and look.
 
 ---
 

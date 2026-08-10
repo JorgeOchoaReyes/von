@@ -51,6 +51,13 @@ export interface Store {
   /** Newest first. */
   listReleases(appId: string, limit?: number): Promise<Release[]>;
   updateRelease(id: string, patch: Partial<Release>): Promise<Release>;
+  /**
+   * Add one to a release's crash count, atomically.
+   *
+   * A read-modify-write would lose reports: every affected device posts at
+   * roughly the same moment, which is the whole signal.
+   */
+  incrementCrashReports(id: string): Promise<Release>;
 }
 
 /** The shape of a brand-new app, in one place so both stores agree. */
@@ -170,6 +177,18 @@ export class FirestoreStore implements Store {
       const data = (await tx.get(ref)).data();
       if (!data) throw new Error(`no release ${id}`);
       const next: Release = { ...Release.parse(data), ...patch };
+      tx.set(ref, next);
+      return next;
+    });
+  }
+
+  async incrementCrashReports(id: string): Promise<Release> {
+    return this.db.runTransaction(async (tx) => {
+      const ref = this.releases.doc(id);
+      const data = (await tx.get(ref)).data();
+      if (!data) throw new Error(`no release ${id}`);
+      const current = Release.parse(data);
+      const next: Release = { ...current, crashReports: current.crashReports + 1 };
       tx.set(ref, next);
       return next;
     });

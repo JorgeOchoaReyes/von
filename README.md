@@ -106,6 +106,7 @@ origins keep one customer's previewed code from reading another's.
 | Reject | `DELETE /v1/apps/:id/preview` — back to the last published state |
 | Undo a release | `POST /v1/apps/:id/rollback` — republish the previous update |
 | History | `GET /v1/apps/:id/releases` — what shipped, newest first |
+| Health | `GET /v1/apps/:id/health` — is the newest release crashing, and can it be undone |
 | Preview state | `GET /v1/apps/:id/preview` — URL and what is pending |
 | One app, no chat | `POST /v1/apps/:id/update` — preview and publish in one, for scripts |
 | Every app | `POST /v1/fleet/update` with `{"instruction": "...", "dryRun": true}` first |
@@ -238,7 +239,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (193 tests overall)
+- OTA-vs-native classifier and blueprint token guard (203 tests overall)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
@@ -252,6 +253,8 @@ Built and tested:
   refuses when there is no honest OTA path back
 - generated apps report their release outcome back, so a release records the EAS
   update group a rollback needs
+- generated apps report a failed launch, attributed to the release the device is
+  actually running — advisory only, never an automatic undo
 - `GET /v1/readiness` — every capability, and what each missing variable blocks
 - CI on every push and pull request; CD of both services to Cloud Run on
   green `master`, with a rollback path
@@ -270,9 +273,9 @@ Not built yet:
 - **Per-user identity.** The API-key gate authorises *callers*, not *tenants*;
   `tenantId` still comes from the request. A real multi-tenant boundary needs
   signed user tokens.
-- **Automatic** post-update checks — watching for a crash spike on a new
-  runtime and *offering* the rollback. The rollback itself now exists; noticing
-  that it is needed does not.
+- **Surfacing** the crash signal in the chat and console UIs. The signal is
+  collected and `GET /v1/apps/:id/health` answers "is this release in trouble,
+  and can it be undone" — but a person still has to ask.
 - pooled -> dedicated data migration
 - store submission (TestFlight / Play internal)
 

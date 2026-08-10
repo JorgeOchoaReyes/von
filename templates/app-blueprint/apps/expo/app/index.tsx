@@ -2,6 +2,7 @@ import Constants from "expo-constants";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { ensureSignedIn } from "../src/lib/firebase";
+import { reportLaunchFailure } from "../src/lib/report";
 
 // Read from app.json rather than substituted in. A template token written
 // directly into JSX would parse as an object literal before substitution, which
@@ -22,7 +23,14 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    ensureSignedIn().then(setUid).catch((e: Error) => setError(e.message));
+    ensureSignedIn()
+      .then(setUid)
+      .catch((e: Error) => {
+        setError(e.message);
+        // A backend the app cannot reach is a failed launch from the user's
+        // point of view, even though nothing threw past React.
+        void reportLaunchFailure();
+      });
   }, []);
 
   if (error) {

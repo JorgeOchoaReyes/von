@@ -157,6 +157,15 @@ export const Release = z.object({
   rolledBackBy: z.string().nullable().default(null),
   /** True when this release is itself an undo of an earlier one. */
   isRollback: z.boolean().default(false),
+  /**
+   * Crash signals reported by installed apps running this release.
+   *
+   * Advisory only. The endpoint that collects them cannot be authenticated — a
+   * client app holds no secret worth the name — so this must never trigger an
+   * automatic rollback. It is here to raise a question with the person who
+   * published the change, not to answer it.
+   */
+  crashReports: z.number().default(0),
   createdAt: z.number(),
 });
 export type Release = z.infer<typeof Release>;

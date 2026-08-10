@@ -27,6 +27,7 @@ function release(overrides: Partial<Release> = {}): Release {
     instruction: "add a screen",
     rolledBackBy: null,
     isRollback: false,
+    crashReports: 0,
     createdAt: clock,
     ...overrides,
   };

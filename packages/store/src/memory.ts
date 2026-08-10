@@ -70,4 +70,12 @@ export class InMemoryStore implements Store {
     this.releases.set(id, next);
     return next;
   }
+
+  async incrementCrashReports(id: string): Promise<Release> {
+    const existing = this.releases.get(id);
+    if (!existing) throw new Error(`no release ${id}`);
+    const next = { ...existing, crashReports: existing.crashReports + 1 };
+    this.releases.set(id, next);
+    return next;
+  }
 }

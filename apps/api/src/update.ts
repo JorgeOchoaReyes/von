@@ -274,6 +274,7 @@ function releaseRecord(
     instruction,
     rolledBackBy: null,
     isRollback: false,
+    crashReports: 0,
     createdAt: Date.now(),
   };
 }

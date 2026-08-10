@@ -173,6 +173,7 @@ test("releases are recorded and read back newest first", async () => {
     instruction: "add a screen",
     rolledBackBy: null,
     isRollback: false,
+    crashReports: 0,
   };
 
   await store.recordRelease({ ...base, id: "rel_1", createdAt: 1 });
@@ -201,6 +202,7 @@ test("marking a release rolled back survives the round trip", async () => {
     instruction: "the bad one",
     rolledBackBy: null,
     isRollback: false,
+    crashReports: 0,
     createdAt: 1,
   });
 
@@ -215,4 +217,31 @@ test("marking a release rolled back survives the round trip", async () => {
 test("updating a release that does not exist fails loudly", async () => {
   const { store } = make();
   await assert.rejects(store.updateRelease("rel_nope", { status: "failed" }), /no release/);
+});
+
+test("crash reports accumulate without losing any", async () => {
+  const { store } = make();
+  await store.recordRelease({
+    id: "rel_1",
+    appId: "app_1",
+    kind: "ota",
+    reason: "JS only",
+    channel: "app-1",
+    runtimeVersion: "1.0.0",
+    status: "succeeded",
+    externalId: "group_1",
+    artifactUrl: null,
+    commitSha: "abc",
+    instruction: "add a screen",
+    rolledBackBy: null,
+    isRollback: false,
+    crashReports: 0,
+    createdAt: 1,
+  });
+
+  // Every affected device reports at roughly the same moment — that
+  // simultaneity *is* the signal, so a read-modify-write would swallow it.
+  await Promise.all(Array.from({ length: 25 }, () => store.incrementCrashReports("rel_1")));
+
+  assert.equal((await store.listReleases("app_1"))[0]!.crashReports, 25);
 });
