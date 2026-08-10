@@ -184,3 +184,20 @@ test("the checkout is always disposed, including on failure", async () => {
   // or not the step succeeded.
   assert.equal(bad.disposed, 1);
 });
+
+test("the hydrated blueprint is still valid JSON", async () => {
+  // Tokens live inside JSON string values. A substituted value containing a
+  // quote or backslash would produce a file that parses here and fails at
+  // `pnpm install` in the generated repo — far from its cause.
+  const checkout = new FakeCheckout(await loadBlueprint());
+  await driverFor(checkout).create({
+    appId: "app_abcdefghijkl",
+    fullName: "von-apps/trail-notes",
+    vars: { ...VARS, APP_NAME: 'Trail "Notes" \\ Pro' },
+  });
+
+  for (const [path, contents] of checkout.files) {
+    if (!path.endsWith(".json")) continue;
+    assert.doesNotThrow(() => JSON.parse(contents), `${path} is not valid JSON after rendering`);
+  }
+});

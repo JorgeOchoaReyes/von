@@ -45,12 +45,41 @@ export interface BlueprintVars extends Record<string, string | undefined> {
 
 const TOKEN = /\{\{([A-Z_]+)\}\}/g;
 
-export function render(template: string, vars: BlueprintVars): string {
+/**
+ * How a substituted value is escaped for the file it lands in.
+ *
+ * `APP_NAME` is the user's own words — the first thing they typed into the
+ * chat. An app called `My "Todo" App` written raw into `app.json` produces a
+ * file that is no longer JSON, and the generated repo then fails at
+ * `pnpm install` with an error that points nowhere near a name.
+ */
+export type Escape = (value: string) => string;
+
+/** Escape for use inside a JSON string literal, which is where every token in
+ * the blueprint's JSON files sits. */
+export const jsonString: Escape = (value) => JSON.stringify(value).slice(1, -1);
+
+export const identity: Escape = (value) => value;
+
+export function render(
+  template: string,
+  vars: BlueprintVars,
+  escape: Escape = identity,
+): string {
   return template.replace(TOKEN, (match, name: string) => {
     const value = vars[name];
     if (value === undefined) return match; // leave it; the assert below catches it
-    return value;
+    return escape(value);
   });
+}
+
+/**
+ * Pick the escaping from the file's own type. Path-driven rather than a caller
+ * decision, so a JSON file added to the blueprint tomorrow is handled without
+ * anyone remembering to ask for it.
+ */
+export function escapeFor(path: string): Escape {
+  return path.endsWith(".json") ? jsonString : identity;
 }
 
 export interface GeneratedFile {
@@ -74,10 +103,14 @@ export function generateRepo(
     ...vars,
     DEFAULT_BRANCH: vars.DEFAULT_BRANCH ?? PROD_BRANCH,
   };
-  return Object.entries(blueprint).map(([path, contents]) => ({
-    path: render(path, resolved),
-    contents: render(contents, resolved),
-  }));
+  return Object.entries(blueprint).map(([path, contents]) => {
+    // The path itself is never JSON, so it renders raw.
+    const renderedPath = render(path, resolved);
+    return {
+      path: renderedPath,
+      contents: render(contents, resolved, escapeFor(renderedPath)),
+    };
+  });
 }
 
 export interface UnresolvedToken {
