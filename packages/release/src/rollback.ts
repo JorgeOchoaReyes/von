@@ -68,6 +68,15 @@ export function findRollbackTarget(releases: Release[]): {
     );
   }
 
+  // A store submission is further out of reach still: the binary is in Play's
+  // hands, and what a user has installed depends on when their device last
+  // updated. Nothing published here can take it back.
+  if (current.kind === "store") {
+    throw new NotRollbackableError(
+      "the last release was a store submission; undo it from the Play Console by halting the rollout, then publish a fix",
+    );
+  }
+
   const previous = ordered
     .slice(1)
     .find(

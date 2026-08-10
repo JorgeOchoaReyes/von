@@ -122,6 +122,7 @@ origins keep one customer's previewed code from reading another's.
 | History | `GET /v1/apps/:id/releases` — what shipped, newest first |
 | Health | `GET /v1/apps/:id/health` — is the newest release crashing, can it be undone, and where is the installable build |
 | Promote | `POST /v1/apps/:id/promote` — pooled backend to a Firebase project of its own, with or without its data |
+| Submit | `POST /v1/apps/:id/submit` — app bundle to Play's internal testing track |
 | Preview state | `GET /v1/apps/:id/preview` — URL and what is pending |
 | One app, no chat | `POST /v1/apps/:id/update` — preview and publish in one, for scripts |
 | Every app | `POST /v1/fleet/update` with `{"instruction": "...", "dryRun": true}` first, or the console's Fleet page |
@@ -254,7 +255,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (249 tests overall; the two UIs are typechecked and built, not unit-tested)
+- OTA-vs-native classifier and blueprint token guard (253 tests overall; the two UIs are typechecked and built, not unit-tested)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
@@ -276,6 +277,9 @@ Built and tested:
 - a native build path — an installable Android APK, dispatched for the first
   release of every app and for every later change to dependencies or app config,
   with the install link surfaced in both UIs
+- Play internal-track submission — an app bundle, its version code bumped in the
+  repo so Play never sees a duplicate, refusing before it spends a build if the
+  deployment has no Play credential
 - pooled -> dedicated promotion — a Firebase project of its own, picked up on the
   app's next launch with no rebuild, with the app's Firestore data copied across
 - a Fleet page: preview which apps an instruction would touch, then apply
@@ -307,8 +311,11 @@ Not built yet:
 - **iOS builds.** Android is self-signed and installs from a link. iOS cannot
   be: it needs an Apple developer account, and EAS wants it interactively at
   least once, so it is not something the platform can do unattended on a user's
-  behalf yet.
-- store submission (TestFlight / Play internal)
+  behalf yet. TestFlight submission waits on the same thing.
+- **The Play listing itself.** Submission is automated; creating the app in the
+  Play Console and uploading its first bundle by hand is not, because Play
+  refuses API uploads to an app it has never seen. The workflow says so and
+  fails before spending a build rather than after.
 
 ### Relationship to ByteLearning
 

@@ -1,0 +1,150 @@
+name: Play submit (internal track)
+
+# Builds an Android App Bundle and pushes it to Google Play's internal testing
+# track.
+#
+# Distinct from the APK workflow, and not a substitute for it. That one produces
+# a file anyone can install from a link, which is how an app reaches its own
+# author and their testers in ten minutes. This one produces an .aab — which
+# cannot be installed from a link, only served by Play — and reaches people
+# through a Play listing.
+#
+# **Prerequisites Play imposes, which no automation removes:**
+#   - a Google Play developer account, and an app created in its console with
+#     this exact package name
+#   - the first bundle uploaded through the console by hand; Play refuses API
+#     uploads to an app that has never had one
+#   - a service account with the Play Developer API enabled, invited to the
+#     account and granted release permissions, its JSON in the
+#     GOOGLE_PLAY_SERVICE_ACCOUNT secret
+#
+# Until those exist this workflow fails at `eas submit` with a permissions error
+# from Google, which is the correct outcome — the alternative is a platform that
+# claims to have submitted an app to a store that has never heard of it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "eas.json build profile (must produce an app bundle)"
+        type: string
+        default: "production"
+      release_id:
+        description: "Von release this run belongs to; reported back on finish"
+        type: string
+        required: false
+      app_id:
+        description: "Von app id"
+        type: string
+        default: "{{APP_ID}}"
+
+# Play rejects two uploads of the same version code, and two concurrent runs
+# would build the same one twice.
+concurrency:
+  group: play-submit-{{APP_ID}}
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Type-check before building
+        run: pnpm turbo type-check
+
+      # Refused early rather than after a ten-minute build: `eas submit` is the
+      # step that needs this, and discovering it is absent there wastes the
+      # build and reports a failure whose cause is one line of configuration.
+      - name: Require Play credentials
+        env:
+          PLAY_KEY: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          [ -n "$PLAY_KEY" ] || {
+            echo "GOOGLE_PLAY_SERVICE_ACCOUNT is not set — this repo cannot submit to Play." >&2
+            exit 1
+          }
+
+      - name: Build the app bundle
+        id: build
+        working-directory: apps/expo
+        env:
+          PROFILE: ${{ inputs.profile || 'production' }}
+        run: |
+          set -euo pipefail
+          out=$(eas build \
+            --platform android \
+            --profile "$PROFILE" \
+            --non-interactive \
+            --wait \
+            --json)
+          echo "$out"
+          id=$(echo "$out" | jq -r '(if type == "array" then .[0] else . end) | .id')
+          url=$(echo "$out" | jq -r '
+            (if type == "array" then .[0] else . end)
+            | .artifacts
+            | (.applicationArchiveUrl // .buildUrl // empty)
+          ')
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          [ -n "$id" ] || { echo "build finished with no id to submit"; exit 1; }
+
+      - name: Submit to the internal track
+        working-directory: apps/expo
+        env:
+          # Written to a file because `eas submit` reads a path, not a value,
+          # and next to eas.json because the path in it is resolved from there.
+          # Removed on exit; nothing in this workflow commits.
+          PLAY_KEY: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PLAY_KEY" > ./play-service-account.json
+          trap 'rm -f "$PWD/play-service-account.json"' EXIT
+          eas submit \
+            --platform android \
+            --profile production \
+            --id "${{ steps.build.outputs.id }}" \
+            --non-interactive
+
+      # Reported whatever happened. The artifact URL is recorded but the control
+      # plane knows not to offer it as an install link: an .aab is not something
+      # a phone can open.
+      - name: Report the outcome to Von
+        if: always() && inputs.release_id != ''
+        env:
+          VON_API_URL: ${{ secrets.VON_API_URL }}
+          VON_RELEASE_TOKEN: ${{ secrets.VON_RELEASE_TOKEN }}
+          APP_ID: ${{ inputs.app_id || '{{APP_ID}}' }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          STATUS: ${{ job.status == 'success' && 'succeeded' || 'failed' }}
+          ARTIFACT_URL: ${{ steps.build.outputs.url }}
+        run: |
+          set -euo pipefail
+          [ -n "$VON_API_URL" ] || { echo "VON_API_URL unset; skipping report"; exit 0; }
+          curl -fsS -X POST \
+            "$VON_API_URL/v1/apps/$APP_ID/releases/$RELEASE_ID/complete" \
+            -H "content-type: application/json" \
+            -H "x-von-release-token: $VON_RELEASE_TOKEN" \
+            -d "{\"status\":\"$STATUS\",\"artifactUrl\":\"${ARTIFACT_URL:-}\"}"

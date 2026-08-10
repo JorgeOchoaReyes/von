@@ -156,3 +156,33 @@ test("an app with nothing built has no install and is not building", () => {
   assert.equal(health.install, null);
   assert.equal(health.building, false);
 });
+
+test("a store submission is never offered as an install link", () => {
+  // Its artifact is an Android App Bundle. Play unpacks one into per-device
+  // APKs; handed to a person directly it is a file their phone will not open.
+  const bundle = release({
+    kind: "store",
+    artifactUrl: "https://expo.dev/artifacts/eas/app.aab",
+  });
+
+  const health = assessHealth([bundle]);
+
+  assert.equal(health.install, null);
+  assert.equal(health.submitting, false);
+});
+
+test("an APK still wins the install link when a newer bundle exists", () => {
+  const apk = release({ kind: "native", artifactUrl: "https://x/app.apk" });
+  const aab = release({ kind: "store", artifactUrl: "https://x/app.aab" });
+
+  assert.equal(assessHealth([apk, aab]).install?.url, "https://x/app.apk");
+});
+
+test("a submission in flight is reported separately from a build", () => {
+  const health = assessHealth([release({ kind: "store", status: "running" })]);
+
+  assert.equal(health.submitting, true);
+  // Not conflated: "we are building your APK" and "we are pushing this to Play"
+  // are different waits with different outcomes.
+  assert.equal(health.building, false);
+});

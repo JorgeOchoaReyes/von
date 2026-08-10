@@ -41,6 +41,13 @@ export interface GenesisInput extends Record<string, unknown> {
    * repository holding the platform key could act on every other customer's.
    */
   releaseToken: string;
+  /**
+   * The platform's Google Play service account key, shared by every app it
+   * submits. Absent when the deployment has no Play account, in which case the
+   * generated repo simply has no submit credential and its Play workflow
+   * refuses before spending a build.
+   */
+  playServiceAccountKey?: string;
 }
 
 export interface GenesisDeps {
@@ -282,6 +289,13 @@ export function genesisPlan(deps: GenesisDeps): Plan {
           VON_API_URL: deps.apiUrl,
           VON_RELEASE_TOKEN: input(ctx).releaseToken,
         };
+        // The platform's own Play developer account, shared by every generated
+        // app it publishes. Optional: a deployment that never submits to Play
+        // does not need one, and an empty secret is refused by the secrets
+        // driver rather than written as a blank the workflow would trust.
+        const play = input(ctx).playServiceAccountKey;
+        if (play) secrets.GOOGLE_PLAY_SERVICE_ACCOUNT = play;
+
         // Only dedicated apps deploy their own functions, so only they need a
         // deploy credential. Pooled apps call the shared project's functions.
         const sa = ctx.outputs.deploySa?.privateKeyJson as string | undefined;

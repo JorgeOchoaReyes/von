@@ -141,6 +141,13 @@ export function checkReadiness(): Readiness {
       "GEMINI_API_KEY",
     ]),
 
+    // Everything else about Android works without this; only the Play track
+    // does not. Named separately so "I cannot install it from a link" and "I
+    // cannot get it to testers through Play" are distinguishable gaps.
+    capability("play", "Submitting an app to Google Play's internal track", [
+      "GOOGLE_PLAY_SERVICE_ACCOUNT",
+    ]),
+
     // Promotion works without it — the caller has to accept a data reset —
     // but "your documents can come with you" is off the table until a bucket
     // exists, and discovering that mid-promotion is the wrong time.

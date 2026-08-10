@@ -41,6 +41,9 @@ async function get<T>(path: string): Promise<T> {
 
 /** Mirrors `ReleaseHealth` from @von/release, which is server-only. */
 export interface ReleaseHealth {
+  install: { releaseId: string; url: string; runtimeVersion: string; createdAt: number } | null;
+  building: boolean;
+  submitting: boolean;
   latest: Release | null;
   crashReports: number;
   suspect: boolean;
@@ -118,6 +121,18 @@ export async function fleetUpdate(
   const body = (await res.json()) as { error?: string } & (FleetPlan | FleetSummary);
   if (!res.ok) throw new Error(body.error ?? `fleet update failed: ${res.status}`);
   return body;
+}
+
+/** Build an app bundle and push it to Play's internal testing track. */
+export async function submitToPlay(id: string): Promise<string> {
+  const res = await fetch(`${BASE}/v1/apps/${id}/submit`, {
+    method: "POST",
+    cache: "no-store",
+    headers: authHeaders(),
+  });
+  const body = (await res.json()) as { error?: string; summary?: string };
+  if (!res.ok) throw new Error(body.error ?? `submit failed: ${res.status}`);
+  return body.summary ?? "Submitted.";
 }
 
 export async function rollbackApp(id: string): Promise<string> {

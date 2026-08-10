@@ -7,6 +7,7 @@ import {
   dispatchRelease,
   nextRuntimeVersion,
   rollback as rollbackRelease,
+  submitToStore,
   type ReleaseDecision,
   type RollbackResult,
   type ShipResult,
@@ -351,7 +352,9 @@ export async function publishChange(
 function releaseRecord(
   app: App,
   instruction: string,
-  commitSha: string,
+  // Nullable because a store submission may have nothing to commit — the
+  // version code moves only when the repo already had one to move.
+  commitSha: string | null,
   ship: ShipResult,
 ): Release {
   return {
@@ -455,4 +458,61 @@ export async function updateApp(
   } finally {
     await sessions.close(app.id);
   }
+}
+
+/**
+ * Put the app's current code on Play's internal testing track.
+ *
+ * Separate from publishing, and not something a diff can trigger. Everything
+ * `publishChange` routes follows from what changed; this follows from someone
+ * deciding they want testers on it, which no code change implies.
+ *
+ * It commits an Android version-code bump first. Play rejects a bundle whose
+ * version code it has already seen, and with `appVersionSource: "local"` the
+ * number lives in the repo — so the repo is where it has to move. EAS's own
+ * `autoIncrement` is deliberately off in the production profile: two things
+ * incrementing the same counter is how a submission ends up claiming a number
+ * Play already has.
+ */
+export async function submitApp(
+  store: Store,
+  app: App,
+  github: GitHubCtx,
+): Promise<PublishResult> {
+  const repoFullName = requireRepo(app);
+
+  const workspace = await openWorkspace(app, github);
+  let commitSha: string | null = null;
+  try {
+    await bumpNativeVersion(workspace, app.runtimeVersion, true);
+    commitSha = await workspace.commitAndPush(
+      `Bump Android version code for Play submission\n\nvia Von`,
+    );
+  } finally {
+    // Short-lived on purpose: this is not a preview session, and leaving a
+    // checkout behind would leak a customer's repo onto disk with nothing
+    // tracking it.
+    await workspace.dispose();
+  }
+
+  const releaseId = newReleaseId();
+  const ship = await submitToStore(
+    {
+      appId: app.id,
+      repoFullName,
+      channel: app.channel,
+      runtimeVersion: app.runtimeVersion,
+      branch: PROD_BRANCH,
+      releaseId,
+    },
+    githubDispatcher(github),
+  );
+
+  await store.recordRelease({
+    ...releaseRecord(app, "Submit to Play (internal track)", commitSha, ship),
+    id: releaseId,
+    kind: "store",
+  });
+
+  return { appId: app.id, commitSha, ship, summary: ship.decision.reason };
 }

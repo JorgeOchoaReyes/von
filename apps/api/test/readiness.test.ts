@@ -21,6 +21,7 @@ const ALL = [
   "VON_PREVIEW_HOST",
   "GEMINI_API_KEY",
   "VON_MIGRATION_BUCKET",
+  "GOOGLE_PLAY_SERVICE_ACCOUNT",
 ];
 
 /** Run with exactly the given environment, restoring whatever was there. */

@@ -78,6 +78,8 @@ export interface ReleaseHealth {
    * their change never arrived.
    */
   building: boolean;
+  /** A store submission is in flight. Play review is not included in that. */
+  submitting: boolean;
   /** Crash signals attributed to it. Advisory — see the note above. */
   crashReports: number;
   /** True once the count passes the threshold worth surfacing. */
@@ -104,7 +106,13 @@ export function assessHealth(releases: Release[], threshold = 3): ReleaseHealth 
 
   // `succeeded` and not merely "has a URL": a failed build reports back too, and
   // linking to a binary whose build failed is worse than linking to nothing.
-  const built = ordered.find((r) => r.status === "succeeded" && r.artifactUrl);
+  //
+  // Store submissions are excluded even though they have an artifact. Theirs is
+  // an Android App Bundle, which Play unpacks into per-device APKs — handing one
+  // to someone as an install link gives them a file their phone will not open.
+  const built = ordered.find(
+    (r) => r.status === "succeeded" && r.artifactUrl && r.kind !== "store",
+  );
 
   const health: ReleaseHealth = {
     latest,
@@ -118,6 +126,9 @@ export function assessHealth(releases: Release[], threshold = 3): ReleaseHealth 
       : null,
     building: ordered.some(
       (r) => r.kind === "native" && (r.status === "queued" || r.status === "running"),
+    ),
+    submitting: ordered.some(
+      (r) => r.kind === "store" && (r.status === "queued" || r.status === "running"),
     ),
     crashReports: latest?.crashReports ?? 0,
     // A single report is noise: one device, one bad network moment, one user on

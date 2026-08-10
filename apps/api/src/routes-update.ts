@@ -7,6 +7,7 @@ import {
   previewChange,
   publishChange,
   rollbackApp,
+  submitApp,
   updateApp,
   type Sessions,
 } from "./update.ts";
@@ -114,6 +115,27 @@ export function updateRoutes(
       // is a 409, not a 500.
       const status = (err as Error).name === "NotRollbackableError" ? 409 : 500;
       return c.json({ error: (err as Error).message }, status);
+    }
+  });
+
+  /**
+   * Put the app on Play's internal testing track.
+   *
+   * Deliberately its own call rather than a flag on publish. Publishing is
+   * routine and happens many times a day; submitting is a decision about who
+   * gets to see the app, costs a build of its own, and depends on a Play
+   * listing that a human had to create. Folding it into publish would make
+   * every ordinary change ten minutes slower and occasionally push something to
+   * testers nobody meant to show them.
+   */
+  app.post("/v1/apps/:id/submit", async (c) => {
+    const target = await store.getApp(c.req.param("id"));
+    if (!target) return c.json({ error: "not found" }, 404);
+
+    try {
+      return c.json(await submitApp(store, target, github()));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
     }
   });
 

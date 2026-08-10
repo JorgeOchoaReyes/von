@@ -168,6 +168,7 @@ export async function startGenesis(
     geminiApiKey: process.env.GEMINI_API_KEY ?? "",
     expoToken: process.env.EXPO_TOKEN ?? "",
     releaseToken: app.releaseToken,
+    playServiceAccountKey: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT?.trim() || undefined,
   };
 
   const ctx: PlanContext = { appId: app.id, outputs: {}, input };

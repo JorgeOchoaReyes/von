@@ -144,3 +144,15 @@ test("a release with no update group fails before dispatching", async () => {
   );
   assert.equal(calls.length, 0);
 });
+
+test("a store submission cannot be rolled back from here", () => {
+  // The binary is in Play's hands and what a device has installed depends on
+  // when it last updated. Publishing anything here takes nothing back, so the
+  // refusal says where the halt button actually is.
+  const submission = release({ kind: "store" });
+
+  assert.throws(
+    () => findRollbackTarget([submission]),
+    /Play Console/,
+  );
+});

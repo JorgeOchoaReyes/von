@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { getApp, getHealth, getResources, listReleases } from "@/lib/api";
 import { PromotePanel } from "./promote";
 import { RollbackPanel } from "./rollback";
+import { SubmitPanel } from "./submit";
 
 export const dynamic = "force-dynamic";
 
@@ -19,11 +20,11 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
     getHealth(id).catch(() => null),
   ]);
 
-  // The newest build anyone can actually install. OTA releases have no artifact
-  // of their own — they land on a binary produced by one of these — so the
-  // install link has to come from the last *native* release that succeeded, not
-  // from the last release.
-  const installable = releases.find((r) => r.artifactUrl && r.status === "succeeded");
+  // Taken from the health response rather than recomputed here. The rule has
+  // two exclusions that are easy to miss — a failed build still reports an
+  // artifact, and a store submission's artifact is an app bundle no phone will
+  // open — and a second implementation of it drifts.
+  const installable = health?.install ?? null;
 
   return (
     <>
@@ -96,7 +97,7 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
         <br />
         {installable ? (
           <>
-            <a href={installable.artifactUrl!}>Download the APK</a>{" "}
+            <a href={installable.url}>Download the APK</a>{" "}
             <span className="sub">
               built {new Date(installable.createdAt).toLocaleString()} · runtime{" "}
               {installable.runtimeVersion}
@@ -116,6 +117,8 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
           </p>
         )}
       </div>
+
+      <SubmitPanel appId={id} submitting={health?.submitting ?? false} />
 
       {health ? <RollbackPanel appId={id} health={health} /> : null}
 
@@ -153,7 +156,7 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
                 </td>
                 <td>
                   <span className={`pill ${r.status}`}>{r.status}</span>
-                  {r.artifactUrl ? (
+                  {r.artifactUrl && r.kind !== "store" ? (
                     <>
                       <br />
                       <a href={r.artifactUrl}>APK</a>

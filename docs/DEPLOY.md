@@ -322,6 +322,7 @@ logs, which is what you want when diagnosing a deploy:
 | `VON_FIRESTORE_DATABASE` | `von-control` |
 | `VON_PREVIEW_HOST` | `preview.example.com` |
 | `VON_MIGRATION_BUCKET` | `von-platform-migrations` — only needed to migrate data on promotion |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT` | Play Developer API service account JSON — only needed to submit to Play (a **secret**, not a variable) |
 | `VON_GITHUB_ORG` | `von-apps` |
 | `VON_TEMPLATE_REPO` | `your-org/app-blueprint` |
 | `VON_PUBLIC_URL` | `https://api.example.com` — baked into every generated app |

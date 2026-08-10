@@ -126,7 +126,8 @@ export const BuildStatus = z.enum([
 export type BuildStatus = z.infer<typeof BuildStatus>;
 
 /**
- * A release attempt — either an OTA update or a native binary build.
+ * A release attempt — an OTA update, a native binary build, or a store
+ * submission.
  *
  * Recorded for every publish, because "go back to the last one that worked" is
  * only answerable if there is a record of what the last one was. An OTA reaches
@@ -137,7 +138,15 @@ export type BuildStatus = z.infer<typeof BuildStatus>;
 export const Release = z.object({
   id: z.string(),
   appId: z.string(),
-  kind: z.enum(["ota", "native"]),
+  /**
+   * `ota` reaches installed builds; `native` produces an installable APK;
+   * `store` builds an app bundle and pushes it to Play's internal track.
+   *
+   * `store` is separate from `native` because the artifact is not the same
+   * thing: an AAB cannot be installed from a link, and offering one as an
+   * install button gives the user a file their phone refuses to open.
+   */
+  kind: z.enum(["ota", "native", "store"]),
   /** Why the router chose this kind — surfaced in the admin UI. */
   reason: z.string(),
   channel: z.string(),

@@ -52,7 +52,7 @@ export interface ShipResult {
   appId: string;
   decision: ReleaseDecision;
   /** What was actually triggered, if anything. */
-  dispatched: "eas-update.yml" | "eas-android-apk.yml" | null;
+  dispatched: "eas-update.yml" | "eas-android-apk.yml" | "play-submit.yml" | null;
   /** The runtime version after this release. */
   runtimeVersion: string;
   /** Set when nothing was dispatched, explaining why. */
@@ -61,6 +61,44 @@ export interface ShipResult {
 
 export const OTA_WORKFLOW = "eas-update.yml";
 export const NATIVE_WORKFLOW = "eas-android-apk.yml";
+export const STORE_WORKFLOW = "play-submit.yml";
+
+/**
+ * Push the current commit to Play's internal testing track.
+ *
+ * Not part of `shipChange`, and deliberately not something a diff can trigger.
+ * Everything the classifier routes is a consequence of what changed; this is a
+ * consequence of someone deciding they want testers on it, which no diff can
+ * imply. It also costs a build of its own — the artifact is an app bundle, not
+ * the installable APK — so inferring it from a code change would spend ten
+ * minutes nobody asked for.
+ */
+export async function submitToStore(
+  target: ShipTarget,
+  dispatcher: WorkflowDispatcher,
+): Promise<ShipResult> {
+  await dispatcher.dispatch(target.repoFullName, STORE_WORKFLOW, target.branch, {
+    profile: "production",
+    release_id: target.releaseId,
+    app_id: target.appId,
+  });
+
+  return {
+    appId: target.appId,
+    decision: {
+      kind: "native",
+      reason:
+        "Submitting to Play's internal testing track — a new app bundle, about ten minutes, and then however long Play takes to process it.",
+      triggers: [],
+      requiresRuntimeBump: false,
+    },
+    dispatched: STORE_WORKFLOW,
+    // A submission ships the runtime version that already exists. Bumping here
+    // would strand every installed build's OTA channel for a release that
+    // changed no code.
+    runtimeVersion: target.runtimeVersion,
+  };
+}
 
 /**
  * Classify a change and deliver it.
