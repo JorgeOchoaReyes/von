@@ -94,6 +94,13 @@ app is a build regardless of what it changed. Otherwise the very first
 instruction, which is almost always a JavaScript edit, would be announced as
 reaching the user's app in about a minute when no app exists on any phone.
 
+A native release also *writes* its runtime version into the repo's `app.json`
+before committing. The policy is `appVersion`, so app.json is where the runtime
+version actually lives: a bump the control plane records but never commits
+leaves every binary on the old version, and the fence that keeps a new bundle
+off a binary lacking its native module never moves. Android's `versionCode` is
+bumped alongside it, so a device will accept the newer APK over the one it has.
+
 Nothing leaves the session until the user publishes. A preview session holds an
 open checkout and a Metro dev server per app, so the first turn costs a few
 seconds to boot and every turn after it fast-refreshes in place. Sessions are
@@ -247,7 +254,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (228 tests overall; the two UIs are typechecked and built, not unit-tested)
+- OTA-vs-native classifier and blueprint token guard (235 tests overall; the two UIs are typechecked and built, not unit-tested)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard

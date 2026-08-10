@@ -461,6 +461,16 @@ first release of every app and the subtler case where a native release bumped
 the runtime version and then failed — leaving every subsequent update publishing
 to a channel no installed build is listening on.
 
+The bump is written into `apps/expo/app.json` and committed with the change,
+which is why the decision is made before the commit rather than after it. With
+`policy: "appVersion"` the runtime version *is* `expo.version`; a bump recorded
+only in the control plane's own record would leave every built binary on the old
+version, the fence would never move, and a bundle referencing a new native
+module would land on a binary without it — the exact failure this machinery
+exists to prevent, arriving anyway and looking like an unexplained crash.
+`android.versionCode` is bumped in the same write, since a device will not take
+a newer APK that claims to be the same build.
+
 ---
 
 ## 11. Decision: Firebase or Supabase for the data tier?

@@ -76,7 +76,23 @@ export async function shipChange(
   target: ShipTarget,
   dispatcher: WorkflowDispatcher,
 ): Promise<ShipResult> {
-  const decision = decideRelease(change, target);
+  return dispatchRelease(decideRelease(change, target), target, dispatcher);
+}
+
+/**
+ * Deliver a decision that was already made.
+ *
+ * Split out from `shipChange` because a runtime-version bump has to be written
+ * into the repository's `app.json` and committed *with* the change — the policy
+ * is `appVersion`, so app.json is where the runtime version actually lives, and
+ * a bump the control plane records but never commits moves nothing. That means
+ * the caller has to know the decision before it commits, and dispatch after.
+ */
+export async function dispatchRelease(
+  decision: ReleaseDecision,
+  target: ShipTarget,
+  dispatcher: WorkflowDispatcher,
+): Promise<ShipResult> {
   const runtimeVersion = nextRuntimeVersion(target.runtimeVersion, decision);
 
   if (decision.kind === "none") {

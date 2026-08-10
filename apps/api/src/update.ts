@@ -4,8 +4,9 @@ import { diffDependencies } from "@von/agent";
 import { newReleaseId, type Release } from "@von/core";
 import {
   decideRelease,
+  dispatchRelease,
+  nextRuntimeVersion,
   rollback as rollbackRelease,
-  shipChange,
   type ReleaseDecision,
   type RollbackResult,
   type ShipResult,
@@ -203,6 +204,59 @@ export async function previewChange(
   };
 }
 
+/** Where the blueprint keeps the Expo app config. */
+const APP_JSON = "apps/expo/app.json";
+
+/**
+ * Write a native release's versions into the repository.
+ *
+ * Two numbers, and they do different jobs.
+ *
+ * `expo.version` is the runtime version, because the blueprint sets
+ * `runtimeVersion: { policy: "appVersion" }`. It is the fence: an OTA update
+ * only reaches builds whose runtime version matches, so bumping it here is what
+ * stops a JS bundle that references a newly added native module from landing on
+ * the older binary that lacks it. The control plane records the bump either
+ * way; if it is not also committed, the built binary keeps the old version and
+ * the fence never actually moves — the failure the classifier exists to
+ * prevent, arriving anyway and looking like a mystery crash.
+ *
+ * `android.versionCode` is Android's own ordering. Left at 1 forever, a device
+ * that already has the app can refuse to install a newer APK over it, and Play
+ * rejects a duplicate outright. Not bumped for the first build, which has
+ * nothing to be newer than.
+ */
+export async function bumpNativeVersion(
+  workspace: { read(p: string): Promise<string | null>; write(p: string, c: string): Promise<void> },
+  runtimeVersion: string,
+  hasEarlierBuild: boolean,
+): Promise<void> {
+  const raw = await workspace.read(APP_JSON);
+  if (raw === null) {
+    // An adopted repository that is not laid out like the blueprint. Publishing
+    // still works; the fence is that repo's own business, and saying so is
+    // better than throwing on a path that worked yesterday.
+    console.warn(`[publish] ${APP_JSON} not found — runtime version left to the repo`);
+    return;
+  }
+
+  // Not a regex substitution: app.json is the file the agent is most likely to
+  // have just edited, and a regex would happily rewrite a "version" key that
+  // belongs to something else.
+  const config = JSON.parse(raw) as {
+    expo?: { version?: string; android?: { versionCode?: number } };
+  };
+  if (!config.expo) throw new Error(`${APP_JSON} has no "expo" key`);
+
+  config.expo.version = runtimeVersion;
+  if (hasEarlierBuild) {
+    const android = (config.expo.android ??= {});
+    android.versionCode = (android.versionCode ?? 1) + 1;
+  }
+
+  await workspace.write(APP_JSON, `${JSON.stringify(config, null, 2)}\n`);
+}
+
 /**
  * Commit what the user previewed, push it, and dispatch the release.
  *
@@ -229,6 +283,24 @@ export async function publishChange(
   }
 
   const pending = session.pending;
+
+  // Decided before the commit, because a native release has to change the
+  // repository too: with `runtimeVersion: { policy: "appVersion" }` the runtime
+  // version *is* `expo.version` in app.json, so a bump the control plane records
+  // but never commits moves nothing. The fence that stops a new JS bundle from
+  // landing on a binary without the native module it needs would then never
+  // move, and the classifier's whole purpose would be defeated silently.
+  const built = await builtRuntimeVersions(store, app.id);
+  const decision = decideRelease(pending, {
+    runtimeVersion: app.runtimeVersion,
+    builtRuntimeVersions: built,
+  });
+  const runtimeVersion = nextRuntimeVersion(app.runtimeVersion, decision);
+
+  if (decision.kind === "native") {
+    await bumpNativeVersion(session.workspace, runtimeVersion, built.length > 0);
+  }
+
   const commitSha = await session.workspace.commitAndPush(
     `${(pending.label ?? "Update").slice(0, 68)}\n\nvia Von`,
   );
@@ -242,12 +314,8 @@ export async function publishChange(
   // would leave the app's CI with nothing to name.
   const releaseId = newReleaseId();
 
-  // Which runtime versions actually have a binary. Without this the first
-  // publish of every app — nearly always a pure-JavaScript change — classifies
-  // as an OTA update and is announced as reaching the user's app in a minute,
-  // when no app has been built and nothing is listening on the channel.
-  const ship = await shipChange(
-    pending,
+  const ship = await dispatchRelease(
+    decision,
     {
       appId: app.id,
       repoFullName,
@@ -255,7 +323,7 @@ export async function publishChange(
       runtimeVersion: app.runtimeVersion,
       branch: PROD_BRANCH,
       releaseId,
-      builtRuntimeVersions: await builtRuntimeVersions(store, app.id),
+      builtRuntimeVersions: built,
     },
     githubDispatcher(github),
   );
