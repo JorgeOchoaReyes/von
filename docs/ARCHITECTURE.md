@@ -151,13 +151,28 @@ silent failures rather than errors:
   generated repo's workflows, so a promoted app would have gone on deploying its
   rules to the pool project it no longer used. The key now includes that project.
 
-**Promotion does not move data.** The pooled database stays where it is; the
-promoted app points at a new, empty one. For an app with real users that is
-destructive, so the API refuses until the caller acknowledges it explicitly and
-records the abandoned database id in the response so it can be found later. A
-copier is the missing piece; until it exists, promotion is for apps whose data
-is expendable, and the refusal is what stops anyone discovering that the hard
-way.
+**Promotion asks what to do about data, and refuses to guess.** Either
+`migrateData` copies the app's Firestore documents into its new database, or
+`acknowledgeDataReset` accepts leaving them behind. Neither is a default,
+because both are consequential and the right answer depends on whether the app
+has users.
+
+The copy is Firestore's own `exportDocuments` / `importDocuments` through a GCS
+bucket, not a document-by-document rewrite. Reading and rewriting every document
+through the API is O(n) requests, bills a read and a write for each, and takes
+hours on anything real; the managed operations are server-side bulk jobs that
+cost a fraction. The migration is recorded in the resource ledger like any other
+provisioned thing, keyed by both ends of the copy, so re-promoting does not
+re-export gigabytes.
+
+What it is **not** is zero-loss. An export is a live snapshot — Firestore does
+not freeze the database while running one — so documents written after the
+export begins are not in the copy, and once the app switches over those writes
+are stranded. Freezing writes for the cutover window is the missing piece. Until
+it exists this suits apps with light or paused traffic, and asking to migrate
+without a configured bucket is refused rather than quietly downgraded to a
+reset: a caller who asked for their data must not be told "promoted" without
+it.
 
 ---
 

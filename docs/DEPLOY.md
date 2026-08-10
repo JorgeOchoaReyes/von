@@ -280,6 +280,7 @@ logs, which is what you want when diagnosing a deploy:
 | `GCP_PARENT` | `folders/123456789` |
 | `VON_FIRESTORE_DATABASE` | `von-control` |
 | `VON_PREVIEW_HOST` | `preview.example.com` |
+| `VON_MIGRATION_BUCKET` | `von-platform-migrations` — only needed to migrate data on promotion |
 | `VON_GITHUB_ORG` | `von-apps` |
 | `VON_TEMPLATE_REPO` | `your-org/app-blueprint` |
 | `VON_PUBLIC_URL` | `https://api.example.com` — baked into every generated app |
@@ -347,15 +348,28 @@ and runs several instances freely.
 ### Promoting an app to its own Firebase project
 
 ```bash
+# Copy the app's Firestore data into its new database.
 curl -s -X POST -H "Authorization: Bearer $VON_API_KEY" \
-     -H 'content-type: application/json' \
-     -d '{"acknowledgeDataReset": true}' \
+     -H 'content-type: application/json' -d '{"migrateData": true}' \
+     https://<service-url>/v1/apps/$APP/promote
+
+# Or start it empty, leaving existing documents in the pool.
+curl -s -X POST -H "Authorization: Bearer $VON_API_KEY" \
+     -H 'content-type: application/json' -d '{"acknowledgeDataReset": true}' \
      https://<service-url>/v1/apps/$APP/promote
 ```
 
-The acknowledgement is required and not defaulted: promotion provisions a new
-empty database and does not carry the app's existing documents across. The
-response names the abandoned database so it can be migrated later.
+One of the two is required and neither is defaulted. Migration stages the export
+through `VON_MIGRATION_BUCKET`, which must be a GCS bucket **in the same location
+as both databases** — Firestore refuses to export across locations:
+
+```bash
+gcloud storage buckets create "gs://$VON_PROJECT-migrations" \
+  --location="$REGION" --project "$VON_PROJECT"
+```
+
+The export is a live snapshot, so writes during the cutover can be lost. Promote
+apps with real traffic during a quiet window.
 
 ### Rolling back
 

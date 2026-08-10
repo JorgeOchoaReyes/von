@@ -60,19 +60,64 @@ export const getHealth = (id: string) => get<ReleaseHealth>(`/v1/apps/${id}/heal
  * text rather than a status code: "the last release was a native build" is the
  * answer the operator needs, and a 409 alone is not.
  */
-export async function promote(id: string): Promise<string> {
+/**
+ * `migrate` copies the app's data across; `reset` accepts leaving it behind.
+ * The API refuses without one of them, which is what stops a stray curl from
+ * stranding a customer's documents.
+ */
+export async function promote(id: string, mode: "migrate" | "reset"): Promise<string> {
   const res = await fetch(`${BASE}/v1/apps/${id}/promote`, {
     method: "POST",
     cache: "no-store",
     headers: { "content-type": "application/json", ...authHeaders() },
-    // Sent explicitly from the console because the operator confirmed it in the
-    // UI. The API refuses without it, which is what stops a stray curl from
-    // stranding a customer's data.
-    body: JSON.stringify({ acknowledgeDataReset: true }),
+    body: JSON.stringify(
+      mode === "migrate" ? { migrateData: true } : { acknowledgeDataReset: true },
+    ),
   });
-  const body = (await res.json()) as { error?: string; firebaseProjectId?: string };
+  const body = (await res.json()) as {
+    error?: string;
+    firebaseProjectId?: string;
+    migrated?: boolean;
+  };
   if (!res.ok) throw new Error(body.error ?? `promote failed: ${res.status}`);
-  return body.firebaseProjectId ?? "promoted";
+  return body.migrated
+    ? `Promoted to ${body.firebaseProjectId} with data copied.`
+    : `Promoted to ${body.firebaseProjectId}; data left in the pool.`;
+}
+
+export interface FleetPlan {
+  dryRun: true;
+  wouldUpdate: Array<{ id: string; name: string; repo: string | null }>;
+  skipped: number;
+}
+
+export interface FleetSummary {
+  total: number;
+  succeeded: number;
+  failed: number;
+  results?: Array<{ appId: string; status: string; error?: string }>;
+}
+
+/**
+ * Apply one instruction across many apps.
+ *
+ * Always previewed first from the console. A fleet update edits every generated
+ * repository the platform owns, so "which apps would this touch" is a question
+ * worth answering before the answer is a list of commits.
+ */
+export async function fleetUpdate(
+  instruction: string,
+  dryRun: boolean,
+): Promise<FleetPlan | FleetSummary> {
+  const res = await fetch(`${BASE}/v1/fleet/update`, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ instruction, dryRun }),
+  });
+  const body = (await res.json()) as { error?: string } & (FleetPlan | FleetSummary);
+  if (!res.ok) throw new Error(body.error ?? `fleet update failed: ${res.status}`);
+  return body;
 }
 
 export async function rollbackApp(id: string): Promise<string> {

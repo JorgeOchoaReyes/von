@@ -43,15 +43,15 @@ async function pooledApp(store: InMemoryStore) {
   return app;
 }
 
-test("promotion refuses until the data reset is acknowledged", async () => {
+test("promotion refuses until the data question is answered", async () => {
   const store = new InMemoryStore();
   const app = await pooledApp(store);
 
-  // The pooled database stays where it is. Promoting silently would leave every
-  // document a user created unreachable from their own app.
+  // Promoting silently would leave every document a user created unreachable
+  // from their own app.
   await assert.rejects(promoteApp(store, pools, app), (err: Error) => {
     assert.ok(err instanceof PromotionRefused);
-    assert.match(err.message, /does not move Firestore data/);
+    assert.match(err.message, /needs a decision about data/);
     return true;
   });
 
@@ -141,4 +141,36 @@ test("hydration re-runs when the backend project changes", () => {
   });
 
   assert.notEqual(pooled, dedicated);
+});
+
+test("promotion needs a decision about data, not just a flag", async () => {
+  const store = new InMemoryStore();
+  const app = await pooledApp(store);
+
+  // Neither option given: the refusal names both, so the caller does not have
+  // to guess which flag exists.
+  await assert.rejects(promoteApp(store, pools, app), (err: Error) => {
+    assert.match(err.message, /migrateData/);
+    assert.match(err.message, /acknowledgeDataReset/);
+    return true;
+  });
+});
+
+test("asking to migrate without a bucket refuses rather than silently resetting", async () => {
+  const store = new InMemoryStore();
+  const app = await pooledApp(store);
+
+  const saved = process.env.VON_MIGRATION_BUCKET;
+  delete process.env.VON_MIGRATION_BUCKET;
+  try {
+    // The dangerous version of this would be to fall back to a reset: the
+    // caller asked for their data and would be told "promoted" without it.
+    await assert.rejects(
+      promoteApp(store, pools, app, { migrateData: true }),
+      /VON_MIGRATION_BUCKET is not configured/,
+    );
+    assert.equal((await store.getApp(app.id))!.backendTier, "pooled");
+  } finally {
+    if (saved !== undefined) process.env.VON_MIGRATION_BUCKET = saved;
+  }
 });

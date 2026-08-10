@@ -143,14 +143,16 @@ app.post("/v1/apps/:id/promote", async (c) => {
   const target = await store.getApp(c.req.param("id"));
   if (!target) return c.json({ error: "not found" }, 404);
 
+  type PromoteBody = { migrateData?: boolean; acknowledgeDataReset?: boolean };
   const body = await c.req
-    .json<{ acknowledgeDataReset?: boolean }>()
+    .json<PromoteBody>()
     // Promotion takes a body but a caller may reasonably send none; the missing
-    // acknowledgement is then refused below, with the reason.
-    .catch(() => ({}) as { acknowledgeDataReset?: boolean });
+    // decision about data is then refused below, with the reason.
+    .catch(() => ({}) as PromoteBody);
 
   try {
     const result = await promoteApp(store, pools, target, {
+      migrateData: body.migrateData,
       acknowledgeDataReset: body.acknowledgeDataReset,
     });
     return c.json(result);

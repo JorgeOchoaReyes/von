@@ -1,7 +1,7 @@
-import type { App } from "@von/core";
-import type { PoolStore } from "@von/provisioning";
+import { newResourceRecord, type App } from "@von/core";
+import { firestoreMigrateDriver, type PoolStore } from "@von/provisioning";
 import type { Store } from "./store.ts";
-import { startGenesis } from "./provision.ts";
+import { migrateCtx, startGenesis } from "./provision.ts";
 
 /**
  * Moving an app from the shared pool to its own Firebase project.
@@ -29,15 +29,25 @@ export class PromotionRefused extends Error {
 
 export interface PromoteOptions {
   /**
-   * Confirmation that the app's existing Firestore data will not come with it.
+   * Copy the app's Firestore documents into its new database.
    *
-   * Required, and deliberately not defaulted. The pooled database stays where
-   * it is: the promoted app points at a brand-new, empty `(default)` database
-   * in its own project, and every document its users have created becomes
+   * The right answer for any app with real users, and the reason it is not the
+   * default is honesty rather than caution: the copy is a snapshot taken while
+   * the database is live, so writes during the cutover can be lost. Choosing it
+   * should be a decision about the app's traffic, not something that happened
+   * silently.
+   */
+  migrateData?: boolean;
+
+  /**
+   * Confirmation that the app's existing Firestore data will *not* come with it.
+   *
+   * The alternative to `migrateData`, and required when it is not set. The
+   * pooled database stays where it is: the promoted app points at a brand-new,
+   * empty `(default)` database and every document its users created becomes
    * unreachable from the app.
    *
-   * That is destructive enough that it cannot be a flag someone forgets. Once
-   * migration exists this becomes the fallback rather than the only path.
+   * That is destructive enough that it cannot be a flag someone forgets.
    */
   acknowledgeDataReset?: boolean;
 }
@@ -46,8 +56,13 @@ export interface PromotionResult {
   app: App;
   /** The project the app now owns. */
   firebaseProjectId: string;
-  /** The pooled database left behind, so it can be found and migrated later. */
-  abandonedDatabase: string | null;
+  /** True when the data was copied across rather than left behind. */
+  migrated: boolean;
+  /**
+   * The pooled database. Still populated either way — a migration copies rather
+   * than moves, so the original stays as a fallback until someone deletes it.
+   */
+  previousDatabase: string | null;
 }
 
 export async function promoteApp(
@@ -68,18 +83,28 @@ export async function promoteApp(
     );
   }
 
-  if (!opts.acknowledgeDataReset) {
+  if (!opts.migrateData && !opts.acknowledgeDataReset) {
     throw new PromotionRefused(
-      "promotion does not move Firestore data: the app will point at a new, empty " +
-        "database and its users' existing documents will be unreachable. " +
-        "Retry with acknowledgeDataReset to accept that.",
+      "promotion needs a decision about data: pass migrateData to copy the app's " +
+        "Firestore documents into its new database, or acknowledgeDataReset to " +
+        "accept that the app starts empty and its users' existing documents stay " +
+        "behind in the pool.",
     );
   }
 
-  // Recorded before the switch, because after it the app no longer knows where
-  // its old data lives — and somebody will eventually want to migrate it.
+  const migration = opts.migrateData ? migrateCtx() : null;
+  if (opts.migrateData && !migration) {
+    throw new PromotionRefused(
+      "VON_MIGRATION_BUCKET is not configured, so there is nowhere to stage the " +
+        "export. Set it, or promote with acknowledgeDataReset.",
+    );
+  }
+
+  // Read before the switch: afterwards the app's config names the new database
+  // and there is nothing left pointing at the old one.
   const previous = await store.getRuntimeConfig(app.id);
-  const abandonedDatabase = previous?.firestoreDatabaseId ?? null;
+  const previousDatabase = previous?.firestoreDatabaseId ?? null;
+  const previousProject = previous?.firebase.projectId ?? null;
 
   // Flip the tier first so genesis's `when` guards select the dedicated steps.
   // If provisioning then fails, the app is left marked dedicated with the plan
@@ -96,14 +121,52 @@ export async function promoteApp(
     );
   }
 
+  // After provisioning, before anyone is told the promotion is done. The app
+  // is already pointing at the new database by now, so a failure here leaves it
+  // empty rather than half-copied — which is why the caller is not told the
+  // migration succeeded unless it did.
+  let migrated = false;
+  if (migration && previousDatabase && previousProject) {
+    const driver = firestoreMigrateDriver(migration);
+    const spec = {
+      appId: app.id,
+      fromProjectId: previousProject,
+      fromDatabaseId: previousDatabase,
+      toProjectId: promoted.firebaseProjectId,
+      toDatabaseId: "(default)",
+    };
+
+    const key = driver.key(spec);
+    // Written to the ledger like any other provisioned resource, so a repeated
+    // promotion does not re-export gigabytes and an interrupted one is visible.
+    const existing = await store.ledger.get(key);
+    if (existing?.state === "ready") {
+      migrated = true;
+    } else {
+      const record = newResourceRecord(key, "firestore.migration", app.id);
+      await store.ledger.upsert({ ...record, state: "creating" });
+      const outputs = await driver.create(spec);
+      await store.ledger.upsert({
+        ...record,
+        state: "ready",
+        externalId: outputs.documentsUri,
+        outputs,
+      });
+      migrated = true;
+    }
+  }
+
   console.log(
-    `[promote] ${app.id} -> ${promoted.firebaseProjectId}` +
-      (abandonedDatabase ? ` (pooled database ${abandonedDatabase} left in place)` : ""),
+    `[promote] ${app.id} -> ${promoted.firebaseProjectId} ` +
+      (migrated
+        ? `(data copied from ${previousDatabase})`
+        : `(pooled database ${previousDatabase ?? "none"} left in place)`),
   );
 
   return {
     app: promoted,
     firebaseProjectId: promoted.firebaseProjectId,
-    abandonedDatabase,
+    migrated,
+    previousDatabase,
   };
 }

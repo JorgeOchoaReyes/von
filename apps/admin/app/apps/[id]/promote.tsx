@@ -16,7 +16,8 @@ export function PromotePanel({ appId, tier }: { appId: string; tier: string }) {
   async function act(formData: FormData): Promise<void> {
     "use server";
     const id = String(formData.get("appId"));
-    await promote(id);
+    const mode = formData.get("mode") === "migrate" ? "migrate" : "reset";
+    await promote(id, mode);
     revalidatePath(`/apps/${id}`);
   }
 
@@ -43,16 +44,15 @@ export function PromotePanel({ appId, tier }: { appId: string; tier: string }) {
         </p>
       </div>
 
-      <form action={act}>
+      <form action={act} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <input type="hidden" name="appId" value={appId} />
-        <button
-          type="submit"
-          className="danger"
-          formNoValidate
-          // Server actions run on submit; the confirm is the last cheap moment
-          // to stop one.
-        >
-          Promote &amp; reset data
+        {/* Two buttons rather than a checkbox: the choice is consequential and
+            asymmetric, so each option says what it does on its own face. */}
+        <button type="submit" name="mode" value="migrate" className="primary">
+          Promote &amp; copy data
+        </button>
+        <button type="submit" name="mode" value="reset" className="danger">
+          Promote, start fresh
         </button>
       </form>
     </div>

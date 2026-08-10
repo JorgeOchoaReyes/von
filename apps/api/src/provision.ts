@@ -85,6 +85,19 @@ function deps(): GenesisDeps {
 }
 
 /**
+ * Where a promotion's export is staged, or null when the platform has nowhere
+ * to put it. Optional because a deployment that never promotes needs no bucket.
+ */
+export function migrateCtx(): { auth: { accessToken: () => Promise<string> }; bucket: string } | null {
+  const bucket = process.env.VON_MIGRATION_BUCKET?.trim();
+  if (!bucket) return null;
+  return {
+    auth: { accessToken: async () => need("GOOGLE_ACCESS_TOKEN") },
+    bucket,
+  };
+}
+
+/**
  * Run genesis for a newly created app.
  *
  * Safe to call more than once for the same app: the plan is keyed off the app

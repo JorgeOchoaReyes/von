@@ -107,10 +107,10 @@ origins keep one customer's previewed code from reading another's.
 | Undo a release | `POST /v1/apps/:id/rollback` — republish the previous update |
 | History | `GET /v1/apps/:id/releases` — what shipped, newest first |
 | Health | `GET /v1/apps/:id/health` — is the newest release crashing, and can it be undone |
-| Promote | `POST /v1/apps/:id/promote` — pooled backend to a Firebase project of its own |
+| Promote | `POST /v1/apps/:id/promote` — pooled backend to a Firebase project of its own, with or without its data |
 | Preview state | `GET /v1/apps/:id/preview` — URL and what is pending |
 | One app, no chat | `POST /v1/apps/:id/update` — preview and publish in one, for scripts |
-| Every app | `POST /v1/fleet/update` with `{"instruction": "...", "dryRun": true}` first |
+| Every app | `POST /v1/fleet/update` with `{"instruction": "...", "dryRun": true}` first, or the console's Fleet page |
 
 The fleet route is how a blueprint fix or dependency bump reaches apps that
 already exist — the template only shapes apps created *after* it changed, so
@@ -240,7 +240,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (208 tests overall; the two UIs are typechecked and built, not unit-tested)
+- OTA-vs-native classifier and blueprint token guard (215 tests overall; the two UIs are typechecked and built, not unit-tested)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
@@ -260,7 +260,8 @@ Built and tested:
   a rollback button, and the chat app interrupts with one when devices start
   failing to open
 - pooled -> dedicated promotion — a Firebase project of its own, picked up on the
-  app's next launch with no rebuild
+  app's next launch with no rebuild, with the app's Firestore data copied across
+- a Fleet page: preview which apps an instruction would touch, then apply
 - `GET /v1/readiness` — every capability, and what each missing variable blocks
 - CI on every push and pull request; CD of both services to Cloud Run on
   green `master`, with a rollback path
@@ -279,11 +280,10 @@ Not built yet:
 - **Per-user identity.** The API-key gate authorises *callers*, not *tenants*;
   `tenantId` still comes from the request. A real multi-tenant boundary needs
   signed user tokens.
-- **Data migration on promotion.** Promotion provisions the new backend and
-  switches the app to it, but Firestore documents stay in the pooled database.
-  The API refuses until the caller acknowledges that, so it cannot happen by
-  accident — but until a copier exists, promoting an app with real users means
-  resetting their data.
+- **Zero-loss migration.** Promotion copies Firestore data via managed
+  export/import, but an export is a live snapshot: writes during the cutover can
+  be lost. Freezing writes for the window is the missing piece, so today this
+  suits apps with light or paused traffic.
 - store submission (TestFlight / Play internal)
 
 ### Relationship to ByteLearning

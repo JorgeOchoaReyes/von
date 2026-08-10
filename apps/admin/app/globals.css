@@ -168,3 +168,31 @@ button.danger:hover {
 .pill.canceled { border-color: var(--err); color: var(--err); }
 .pill.queued,
 .pill.running { border-color: var(--warn); color: var(--warn); }
+
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary:hover {
+  filter: brightness(1.08);
+}
+
+textarea {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: inherit;
+  resize: vertical;
+}
+
+.pill.fulfilled { border-color: var(--ok); color: var(--ok); }
+.pill.rejected { border-color: var(--err); color: var(--err); }
