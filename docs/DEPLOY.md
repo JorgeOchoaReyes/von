@@ -164,9 +164,16 @@ gh repo create your-org/app-blueprint --private
 # push the contents of templates/app-blueprint to it, then mark it a template
 ```
 
-> The default branch of generated repositories must be `master`, matching
-> `PROD_BRANCH`. Set it as the template's default branch; the API used here
-> cannot change repository settings after creation.
+Its default branch does **not** have to be `master`. Genesis renames the
+generated repository's branch to `master` if it is anything else — a rename
+rather than a settings change, because at that point no other branch exists to
+point the default at. Naming the template's branch `master` simply skips the
+extra call.
+
+Every branch name in the platform is `master` (`PROD_BRANCH`): what workflows
+trigger on, what the agent pushes to, what previews check out. A generated repo
+on `main` would have workflows watching a branch that does not exist, and
+nothing would run — silently.
 
 ---
 

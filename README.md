@@ -34,7 +34,8 @@ packages/
 templates/
   app-blueprint/  A complete Expo + Firebase monorepo with per-app values as
                   {{TOKENS}}. Push this to its own repo and mark it a template;
-                  genesis copies it and `hydrate` substitutes the values.
+                  genesis copies it, renames the branch to `master`, and
+                  `hydrate` substitutes the values.
 ```
 
 `apps/chat` is app #0 — the intent is for it to be built and shipped through the
@@ -237,7 +238,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (188 tests overall)
+- OTA-vs-native classifier and blueprint token guard (193 tests overall)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard

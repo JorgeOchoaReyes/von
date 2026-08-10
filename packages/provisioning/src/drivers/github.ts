@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { PROD_BRANCH } from "@von/generator";
 import { assertOk, TerminalError, type Driver } from "../driver.ts";
 
 /**
@@ -87,9 +88,41 @@ export function repoDriver(ctx: GitHubCtx): Driver<RepoSpec, RepoOutputs> {
   const toOutputs = (repo: any): RepoOutputs => ({
     externalId: String(repo.id),
     fullName: repo.full_name,
-    defaultBranch: repo.default_branch ?? "main",
+    // No `?? "main"` fallback: every branch name in this platform is
+    // PROD_BRANCH. A silent fallback to a different name would produce a repo
+    // whose workflows trigger on a branch nothing ever pushes to.
+    defaultBranch: repo.default_branch ?? PROD_BRANCH,
     cloneUrl: repo.clone_url,
   });
+
+  /**
+   * Make the default branch `master`, whatever the template's happened to be.
+   *
+   * Template-generate copies the template repository's default branch, name and
+   * all. If that is `main`, the generated app gets workflows that trigger on
+   * `master` and a branch called `main` — so nothing ever runs, the agent's
+   * pushes go somewhere no release watches, and the failure is silent.
+   *
+   * A rename rather than a settings write, because at this point the other
+   * branch does not exist yet: you cannot point `default_branch` at a ref that
+   * is not there. Renaming moves the branch and the default together, and
+   * GitHub redirects the old name.
+   */
+  const ensureDefaultBranch = async (repo: any): Promise<any> => {
+    const current = repo.default_branch;
+    if (!current || current === PROD_BRANCH) return repo;
+
+    const renamed = await gh(
+      ctx,
+      `/repos/${repo.full_name}/branches/${encodeURIComponent(current)}/rename`,
+      {
+        method: "POST",
+        context: `rename ${current} to ${PROD_BRANCH}`,
+        body: JSON.stringify({ new_name: PROD_BRANCH }),
+      },
+    );
+    return { ...repo, default_branch: renamed?.name ?? PROD_BRANCH };
+  };
 
   return {
     kind: "github.repo",
@@ -102,7 +135,10 @@ export function repoDriver(ctx: GitHubCtx): Driver<RepoSpec, RepoOutputs> {
       });
       if (res.status === 404) return null;
       await assertOk(res, "read repo");
-      return toOutputs(await res.json());
+      // Also on the read path: this is the recovery route when the create
+      // succeeded but our ledger write was lost, and the rename may have been
+      // what was interrupted.
+      return toOutputs(await ensureDefaultBranch(await res.json()));
     },
 
     async create(spec) {
@@ -120,7 +156,7 @@ export function repoDriver(ctx: GitHubCtx): Driver<RepoSpec, RepoOutputs> {
           include_all_branches: false,
         }),
       });
-      return toOutputs(repo);
+      return toOutputs(await ensureDefaultBranch(repo));
     },
 
     async destroy(_spec, outputs) {
