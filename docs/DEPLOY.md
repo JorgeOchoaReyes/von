@@ -344,6 +344,19 @@ already behind an interface for exactly that reason.
 The console has no such constraint: it holds nothing in memory, scales to zero,
 and runs several instances freely.
 
+### Promoting an app to its own Firebase project
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $VON_API_KEY" \
+     -H 'content-type: application/json' \
+     -d '{"acknowledgeDataReset": true}' \
+     https://<service-url>/v1/apps/$APP/promote
+```
+
+The acknowledgement is required and not defaulted: promotion provisions a new
+empty database and does not carry the app's existing documents across. The
+response names the abandoned database so it can be migrated later.
+
 ### Rolling back
 
 Run the **CD** workflow manually with a known-good commit SHA as `ref`. Images

@@ -130,6 +130,35 @@ few hundred thousand is not, and this design never asks for it.
 Tier 2 is also the honest answer to "what happens if we leave?" — the generated
 repo is a normal Expo + Firebase monorepo with working CI. It runs without us.
 
+### Promoting Tier 0 -> Tier 1
+
+`POST /v1/apps/:id/promote` flips the tier and re-runs genesis. Because the plan
+is idempotent, that creates exactly what the new tier needs — project, web app,
+`(default)` database, anonymous auth, deploy service account — and reuses the
+repository, EAS project and update channel untouched. The app's runtime config
+is rewritten, and the installed build picks up the new backend on its next
+launch: no rebuild, no reinstall, no store review. That is §4 being cashed in.
+
+Two idempotency keys had to change for this to work at all, and both were
+silent failures rather than errors:
+
+- **Firestore** was keyed on the app id. A promoted app already had a
+  `firebase.firestore:<app>` record from its pooled database, so the ledger
+  would short-circuit — promotion would report success against a project with
+  no database in it. The key now includes the database id, because a named
+  database in a pool and `(default)` in a new project are two resources.
+- **Hydration** was keyed on the app id. It bakes `FIREBASE_PROJECT_ID` into the
+  generated repo's workflows, so a promoted app would have gone on deploying its
+  rules to the pool project it no longer used. The key now includes that project.
+
+**Promotion does not move data.** The pooled database stays where it is; the
+promoted app points at a new, empty one. For an app with real users that is
+destructive, so the API refuses until the caller acknowledges it explicitly and
+records the abandoned database id in the response so it can be found later. A
+copier is the missing piece; until it exists, promotion is for apps whose data
+is expendable, and the refusal is what stops anyone discovering that the hard
+way.
+
 ---
 
 ## 4. What makes moving between tiers cheap

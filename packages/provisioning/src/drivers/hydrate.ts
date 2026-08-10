@@ -68,7 +68,15 @@ const isBinary = (path: string): boolean => {
 export function repoHydrateDriver(ctx: HydrateCtx): Driver<HydrateSpec, HydrateOutputs> {
   return {
     kind: "github.hydrate",
-    key: (s) => `github.hydrate:${s.appId}`,
+    /**
+     * Keyed by the backend it wrote in, not just by the app.
+     *
+     * Hydration bakes `FIREBASE_PROJECT_ID` into the repo's workflows. Promoting
+     * an app to its own Firebase project changes that value, and a key on the
+     * app id alone would short-circuit the re-run — leaving the promoted app's
+     * CI deploying its rules to the *pool* project it no longer uses.
+     */
+    key: (s) => `github.hydrate:${s.appId}:${s.vars.FIREBASE_PROJECT_ID}`,
 
     /**
      * Always null — hydration is a commit, and asking "is it already done?"

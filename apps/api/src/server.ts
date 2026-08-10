@@ -7,6 +7,7 @@ import { authOptionsFromEnv, requireApiKey } from "./auth.ts";
 import { adoptedRepoReadiness, checkReadiness, logReadiness } from "./readiness.ts";
 import { createPersistence } from "./store.ts";
 import { githubCtx, startGenesis } from "./provision.ts";
+import { promoteApp, PromotionRefused } from "./promote.ts";
 import { previewChange } from "./update.ts";
 import { createPreviewSessions, startPreviewSweeper } from "./preview.ts";
 import { previewProxy } from "./proxy.ts";
@@ -126,6 +127,37 @@ app.post("/v1/apps/:id/provision", async (c) => {
     return c.json(await store.getApp(target.id));
   } catch (err) {
     return c.json({ error: (err as Error).message }, 500);
+  }
+});
+
+/**
+ * Promote an app from the shared pool to its own Firebase project.
+ *
+ * Cheap because the app fetches its backend config at boot rather than having
+ * it compiled in (docs/ARCHITECTURE.md §4): the installed build picks up the
+ * new backend on its next launch, with no rebuild and no store review.
+ *
+ * It does not move data, and refuses until the caller says so explicitly.
+ */
+app.post("/v1/apps/:id/promote", async (c) => {
+  const target = await store.getApp(c.req.param("id"));
+  if (!target) return c.json({ error: "not found" }, 404);
+
+  const body = await c.req
+    .json<{ acknowledgeDataReset?: boolean }>()
+    // Promotion takes a body but a caller may reasonably send none; the missing
+    // acknowledgement is then refused below, with the reason.
+    .catch(() => ({}) as { acknowledgeDataReset?: boolean });
+
+  try {
+    const result = await promoteApp(store, pools, target, {
+      acknowledgeDataReset: body.acknowledgeDataReset,
+    });
+    return c.json(result);
+  } catch (err) {
+    // A refusal is a statement about this app's state, not a server fault.
+    const status = err instanceof PromotionRefused ? 409 : 500;
+    return c.json({ error: (err as Error).message }, status);
   }
 });
 

@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { getApp, getHealth, getResources, listReleases } from "@/lib/api";
+import { PromotePanel } from "./promote";
 import { RollbackPanel } from "./rollback";
 
 export const dynamic = "force-dynamic";
@@ -64,6 +65,9 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
           </tbody>
         </table>
       </div>
+
+      <h2 style={{ fontSize: 17, marginTop: 32 }}>Backend</h2>
+      <PromotePanel appId={id} tier={app.backendTier} />
 
       <h2 style={{ fontSize: 17, marginTop: 32 }}>Releases</h2>
       <p className="sub">

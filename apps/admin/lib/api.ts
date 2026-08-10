@@ -60,6 +60,21 @@ export const getHealth = (id: string) => get<ReleaseHealth>(`/v1/apps/${id}/heal
  * text rather than a status code: "the last release was a native build" is the
  * answer the operator needs, and a 409 alone is not.
  */
+export async function promote(id: string): Promise<string> {
+  const res = await fetch(`${BASE}/v1/apps/${id}/promote`, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    // Sent explicitly from the console because the operator confirmed it in the
+    // UI. The API refuses without it, which is what stops a stray curl from
+    // stranding a customer's data.
+    body: JSON.stringify({ acknowledgeDataReset: true }),
+  });
+  const body = (await res.json()) as { error?: string; firebaseProjectId?: string };
+  if (!res.ok) throw new Error(body.error ?? `promote failed: ${res.status}`);
+  return body.firebaseProjectId ?? "promoted";
+}
+
 export async function rollbackApp(id: string): Promise<string> {
   const res = await fetch(`${BASE}/v1/apps/${id}/rollback`, {
     method: "POST",
