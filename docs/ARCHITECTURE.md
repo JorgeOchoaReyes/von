@@ -302,10 +302,36 @@ stages, not one: the preview (§13) is where the user decides whether the change
 is right, and the OTA is where it becomes real. Only the second one is a
 release.
 
-Still worth building on top: **automated post-update checks** — the agent
-watching for a crash spike or a failed launch on the new runtime and offering a
-rollback, which EAS Update supports natively by republishing the previous bundle
-to the channel.
+### Undo
+
+An OTA reaches every installed device in about a minute with no review step
+between an agent's diff and a user's phone. That speed is the product, and it is
+also why undo has to exist: the recovery path for a bundle that crashes on
+launch cannot be "describe a fix", performed by someone holding an app that no
+longer opens.
+
+Rolling back is a **forward** action. EAS Update has no un-publish, so the fix
+is to publish the previous bundle again and let it become the newest on the
+channel. A rollback is therefore itself a release, recorded like any other, and
+the bad one is marked rather than deleted — the record of what went wrong is the
+useful part, and it is what stops the next rollback from choosing the bundle
+that was just rejected.
+
+Two refusals matter more than the happy path:
+
+- **A native release cannot be undone with an update.** The change lives in the
+  installed binary; republishing an older JS bundle does not remove it, and if
+  the build bumped the runtime version the bundle would not even reach the new
+  binary. That needs another build, and saying so is better than dispatching
+  something that appears to succeed.
+- **A runtime version bump has no OTA path back.** An update only reaches builds
+  whose runtime version matches, so restoring a bundle from before the bump
+  would either target devices that cannot run it or silently reach nobody while
+  reporting success.
+
+Still missing: **noticing**. The rollback is one call, but a human has to decide
+to make it. Watching for a crash spike or a failed launch on a new runtime, and
+offering the undo unprompted, is the remaining half.
 
 ---
 

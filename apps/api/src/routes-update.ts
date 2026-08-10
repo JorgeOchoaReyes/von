@@ -6,6 +6,7 @@ import {
   discardPreview,
   previewChange,
   publishChange,
+  rollbackApp,
   updateApp,
   type Sessions,
 } from "./update.ts";
@@ -78,6 +79,41 @@ export function updateRoutes(
       return c.json(await publishChange(store, sessions, target, github()));
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  /** What has shipped, newest first. */
+  app.get("/v1/apps/:id/releases", async (c) => {
+    const target = await store.getApp(c.req.param("id"));
+    if (!target) return c.json({ error: "not found" }, 404);
+    return c.json(await store.listReleases(target.id));
+  });
+
+  /**
+   * Undo the last release by republishing the one before it.
+   *
+   * An OTA reaches installed devices in about a minute with no review step, so
+   * this is the recovery path for a bundle that crashes on launch — for a user
+   * whose app no longer opens, "describe a fix" is not one.
+   */
+  app.post("/v1/apps/:id/rollback", async (c) => {
+    const target = await store.getApp(c.req.param("id"));
+    if (!target) return c.json({ error: "not found" }, 404);
+
+    try {
+      const result = await rollbackApp(store, target, github());
+      return c.json({
+        appId: target.id,
+        rolledBack: result.from.id,
+        restored: result.to.id,
+        summary: `Restored the update from ${new Date(result.to.createdAt).toISOString()}`,
+      });
+    } catch (err) {
+      // A refusal here is a statement about the app's history — the last
+      // release was native, or there is nothing earlier to go back to — so it
+      // is a 409, not a 500.
+      const status = (err as Error).name === "NotRollbackableError" ? 409 : 500;
+      return c.json({ error: (err as Error).message }, status);
     }
   });
 

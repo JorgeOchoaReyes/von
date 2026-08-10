@@ -1,6 +1,7 @@
 import {
   App,
   newAppId,
+  Release,
   slugify,
   RuntimeConfig,
   type ResourceLedger,
@@ -43,6 +44,12 @@ export interface Store {
   updateApp(id: string, patch: Partial<App>): Promise<App>;
   putRuntimeConfig(cfg: RuntimeConfig): Promise<void>;
   getRuntimeConfig(appId: string): Promise<RuntimeConfig | null>;
+
+  /** Record what shipped. Every publish writes one. */
+  recordRelease(release: Release): Promise<void>;
+  /** Newest first. */
+  listReleases(appId: string, limit?: number): Promise<Release[]>;
+  updateRelease(id: string, patch: Partial<Release>): Promise<Release>;
 }
 
 /** The shape of a brand-new app, in one place so both stores agree. */
@@ -137,5 +144,32 @@ export class FirestoreStore implements Store {
     const snap = await this.db.collection(COLLECTIONS.runtimeConfigs).doc(appId).get();
     const data = snap.data();
     return data ? RuntimeConfig.parse(data) : null;
+  }
+
+  private get releases() {
+    return this.db.collection(COLLECTIONS.releases);
+  }
+
+  async recordRelease(release: Release): Promise<void> {
+    await this.releases.doc(release.id).set(release);
+  }
+
+  async listReleases(appId: string, limit = 50): Promise<Release[]> {
+    const { docs } = await this.releases.where("appId", "==", appId).get();
+    return docs
+      .map((d) => Release.parse(d.data()))
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit);
+  }
+
+  async updateRelease(id: string, patch: Partial<Release>): Promise<Release> {
+    return this.db.runTransaction(async (tx) => {
+      const ref = this.releases.doc(id);
+      const data = (await tx.get(ref)).data();
+      if (!data) throw new Error(`no release ${id}`);
+      const next: Release = { ...Release.parse(data), ...patch };
+      tx.set(ref, next);
+      return next;
+    });
   }
 }

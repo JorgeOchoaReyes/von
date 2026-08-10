@@ -197,6 +197,10 @@ importers:
         version: 5.7.3
 
   packages/release:
+    dependencies:
+      '@von/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       typescript:
         specifier: ^5.7.2

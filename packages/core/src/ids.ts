@@ -20,6 +20,7 @@ export const newTenantId = () => `tnt_${shortId(12)}`;
 export const newAppId = () => `app_${shortId(12)}`;
 export const newBuildId = () => `bld_${shortId(12)}`;
 export const newRunId = () => `run_${shortId(16)}`;
+export const newReleaseId = () => `rel_${shortId(12)}`;
 
 /**
  * A DNS/Firebase-safe slug. Firebase project ids must be 6-30 chars, lowercase

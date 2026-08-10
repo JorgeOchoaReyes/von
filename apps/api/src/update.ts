@@ -1,10 +1,13 @@
 import type { App } from "@von/core";
 import { GitWorkspace, runAgent, type AgentEvent } from "@von/agent";
 import { diffDependencies } from "@von/agent";
+import { newReleaseId, type Release } from "@von/core";
 import {
   classifyChange,
+  rollback as rollbackRelease,
   shipChange,
   type ReleaseDecision,
+  type RollbackResult,
   type ShipResult,
   type WorkflowDispatcher,
 } from "@von/release";
@@ -227,11 +230,87 @@ export async function publishChange(
     await store.updateApp(app.id, { runtimeVersion: ship.runtimeVersion });
   }
 
+  // Recorded whatever the outcome, including `none`. A release history with the
+  // uninteresting entries filtered out is a history you cannot reason about —
+  // and "the last thing that shipped" is exactly the question rollback asks.
+  await store.recordRelease(releaseRecord(app, pending.label ?? "", commitSha, ship));
+
   // Cleared only after the dispatch succeeded: a failed dispatch leaves the
   // change pending and republishable rather than committed-but-never-shipped.
   sessions.setPending(app.id, null);
 
   return { appId: app.id, commitSha, ship, summary: ship.decision.reason };
+}
+
+/** The record of what a publish did, in the shape the store keeps. */
+function releaseRecord(
+  app: App,
+  instruction: string,
+  commitSha: string,
+  ship: ShipResult,
+): Release {
+  return {
+    id: newReleaseId(),
+    appId: app.id,
+    kind: ship.decision.kind === "native" ? "native" : "ota",
+    reason: ship.decision.reason,
+    channel: app.channel,
+    runtimeVersion: ship.runtimeVersion,
+    // The workflow is dispatched, not finished. Its real outcome arrives later;
+    // claiming success here would make a failed build look like a shipped one.
+    status: ship.dispatched ? "queued" : "succeeded",
+    externalId: null,
+    artifactUrl: null,
+    commitSha,
+    instruction,
+    rolledBackBy: null,
+    isRollback: false,
+    createdAt: Date.now(),
+  };
+}
+
+/**
+ * Undo the last release by republishing the one before it.
+ *
+ * Both records are written: the rollback as a new release, and the bad one
+ * marked with what replaced it. Marking rather than deleting keeps the history
+ * honest — and stops the next rollback from choosing the bundle that was just
+ * rejected.
+ */
+export async function rollbackApp(
+  store: Store,
+  app: App,
+  github: GitHubCtx,
+): Promise<RollbackResult> {
+  const repoFullName = requireRepo(app);
+  const releases = await store.listReleases(app.id);
+
+  const result = await rollbackRelease(
+    releases,
+    { appId: app.id, repoFullName, branch: PROD_BRANCH },
+    githubDispatcher(github),
+  );
+
+  const undo: Release = {
+    ...releaseRecord(app, `Roll back to ${result.to.id}`, result.to.commitSha ?? "", {
+      appId: app.id,
+      decision: {
+        kind: "ota",
+        reason: `Restored the update from ${result.to.id}`,
+        triggers: ["rollback"],
+        requiresRuntimeBump: false,
+      },
+      dispatched: "eas-update.yml",
+      runtimeVersion: result.to.runtimeVersion,
+    }),
+    externalId: result.to.externalId,
+    isRollback: true,
+  };
+
+  await store.recordRelease(undo);
+  await store.updateRelease(result.from.id, { rolledBackBy: undo.id });
+
+  return result;
 }
 
 /**

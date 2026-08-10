@@ -117,7 +117,15 @@ export const BuildStatus = z.enum([
 ]);
 export type BuildStatus = z.infer<typeof BuildStatus>;
 
-/** A release attempt — either an OTA update or a native binary build. */
+/**
+ * A release attempt — either an OTA update or a native binary build.
+ *
+ * Recorded for every publish, because "go back to the last one that worked" is
+ * only answerable if there is a record of what the last one was. An OTA reaches
+ * installed devices in about a minute with no review step in between, so the
+ * ability to undo it is not a nicety — it is the only thing standing between a
+ * bad bundle and a user whose app no longer opens.
+ */
 export const Release = z.object({
   id: z.string(),
   appId: z.string(),
@@ -130,6 +138,17 @@ export const Release = z.object({
   /** EAS build/update id, once known. */
   externalId: z.string().nullable().default(null),
   artifactUrl: z.string().nullable().default(null),
+  /** Commit this release shipped. The anchor for "what changed since". */
+  commitSha: z.string().nullable().default(null),
+  /** What the user asked for, so a release list reads like a history. */
+  instruction: z.string().default(""),
+  /**
+   * Set when this release was undone, naming the release that replaced it.
+   * Kept rather than deleted: the record of a bad ship is the useful part.
+   */
+  rolledBackBy: z.string().nullable().default(null),
+  /** True when this release is itself an undo of an earlier one. */
+  isRollback: z.boolean().default(false),
   createdAt: z.number(),
 });
 export type Release = z.infer<typeof Release>;
