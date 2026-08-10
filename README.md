@@ -254,7 +254,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (236 tests overall; the two UIs are typechecked and built, not unit-tested)
+- OTA-vs-native classifier and blueprint token guard (249 tests overall; the two UIs are typechecked and built, not unit-tested)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
@@ -284,6 +284,9 @@ Built and tested:
   green `master`, with a rollback path
 - control plane, admin console, Expo chat client
 - pool allocator — sticky per app, never overfills, warns before capacity runs out
+- Google credentials that survive the hour — service-account key, Cloud Run
+  metadata server, or a static token for a quick local try, cached and refreshed
+  ahead of expiry
 
 Not built yet:
 

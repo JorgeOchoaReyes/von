@@ -145,6 +145,40 @@ Roles for `von-runtime`: `roles/datastore.user`,
 that holds pool projects, not on the platform project —
 `roles/resourcemanager.projectCreator` and `roles/billing.user`.
 
+### How the control plane authenticates as `von-runtime`
+
+**On Cloud Run: nothing to do.** The service runs as
+`GCP_RUNTIME_SERVICE_ACCOUNT` and the control plane takes its token from the
+instance metadata server, refreshing it before each expiry. No key exists to
+store, leak, or rotate. This is the intended production path.
+
+**Anywhere else** — a VM you manage, a laptop, a container off Google — it needs
+a key, and it signs its own JWT to exchange for tokens:
+
+```bash
+gcloud iam service-accounts keys create von-runtime.json \
+  --iam-account "von-runtime@$VON_PROJECT.iam.gserviceaccount.com"
+
+export GOOGLE_APPLICATION_CREDENTIALS=$PWD/von-runtime.json
+# ...or inline, which is what a secret manager gives you:
+export GOOGLE_SERVICE_ACCOUNT_KEY="$(cat von-runtime.json)"
+```
+
+**For a quick local try**, `GOOGLE_ACCESS_TOKEN` still works:
+
+```bash
+export GOOGLE_ACCESS_TOKEN=$(gcloud auth print-access-token)
+```
+
+Note what that is: a token, not a credential. It expires about an hour after
+it is minted, and a control plane left running past that starts failing
+provisioning with 401s while every environment variable still looks correct.
+Use it to try something, never to run something.
+
+Whichever it finds, the control plane logs the identity at first use —
+`[google] authenticating as service account von-runtime@…` — so a permission
+error is a short conversation rather than a guess.
+
 ### Workload Identity Federation
 
 So CD holds no long-lived key at all. Follow
