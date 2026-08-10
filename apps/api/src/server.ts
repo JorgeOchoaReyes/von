@@ -5,6 +5,7 @@ import { BuildStatus, newRunId } from "@von/core";
 import { assessHealth, attributeCrash, decideRelease } from "@von/release";
 import { authOptionsFromEnv, requireApiKey } from "./auth.ts";
 import { adoptedRepoReadiness, checkReadiness, logReadiness } from "./readiness.ts";
+import { preflight } from "./preflight.ts";
 import { createPersistence } from "./store.ts";
 import { githubCtx, startGenesis } from "./provision.ts";
 import { promoteApp, PromotionRefused } from "./promote.ts";
@@ -265,6 +266,25 @@ app.get("/v1/apps/:id/health", async (c) => {
   const appId = c.req.param("id");
   if (!(await store.getApp(appId))) return c.json({ error: "not found" }, 404);
   return c.json(assessHealth(await store.listReleases(appId)));
+});
+
+/**
+ * Which credentials actually work.
+ *
+ * The companion to readiness, and the half that matters on the day credentials
+ * are added: readiness proves a variable is set, this proves the provider
+ * accepts it and belongs to the account you meant. Every call it makes is
+ * read-only, so it is safe to run against a live deployment.
+ *
+ * Not run at boot. It is several round trips to other people's APIs, and a
+ * control plane that will not start because Expo is having an afternoon is
+ * worse than one that starts and says so.
+ */
+app.get("/v1/preflight", async (c) => {
+  const result = await preflight();
+  // 503 when something is genuinely broken, so a script can gate on the status
+  // code without parsing the body.
+  return c.json(result, result.ok ? 200 : 503);
 });
 
 /**

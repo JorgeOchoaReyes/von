@@ -173,6 +173,23 @@ off — and prints exactly what it can and cannot do:
 
 `GET /v1/readiness` returns the same thing as JSON, at any time.
 
+Readiness only checks that a variable is *set*. `GET /v1/preflight` checks that
+each credential is one the provider actually accepts — a whoami, a list, a token
+exchange, all read-only, nothing created. It is the half that matters the day
+credentials are added, because a token pasted with a trailing newline or
+belonging to the wrong Expo account passes readiness and fails three steps into
+a background provisioning run:
+
+```bash
+curl -s localhost:8787/v1/preflight | jq
+```
+
+It reports what each credential *proved*, not just that it worked — the GitHub
+login, the Google identity, the Expo account name — because a credential that
+authenticates perfectly and belongs to the wrong account is the failure no
+boolean can show you. Skipped is not failed: a deployment that has deliberately
+not configured Play is not broken.
+
 ### 3. Drive the loop with two tokens
 
 This is the fastest way to see the product work, and it needs no billing
@@ -255,7 +272,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (253 tests overall; the two UIs are typechecked and built, not unit-tested)
+- OTA-vs-native classifier and blueprint token guard (262 tests overall; the two UIs are typechecked and built, not unit-tested)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
@@ -284,6 +301,8 @@ Built and tested:
   app's next launch with no rebuild, with the app's Firestore data copied across
 - a Fleet page: preview which apps an instruction would touch, then apply
 - `GET /v1/readiness` — every capability, and what each missing variable blocks
+- `GET /v1/preflight` — whether each credential is one its provider accepts,
+  read-only, plus a `.env.example` staged by what unlocks what
 - CI on every push and pull request; CD of both services to Cloud Run on
   green `master`, with a rollback path
 - control plane, admin console, Expo chat client
