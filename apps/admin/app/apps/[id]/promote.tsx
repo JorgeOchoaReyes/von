@@ -5,12 +5,10 @@ import { promote } from "@/lib/api";
  * Tier 0 -> Tier 1, with the cost stated before the click.
  *
  * Promotion is cheap in every respect except one: the app's Firestore data does
- * not come with it. That is the whole content of this component — the button is
- * two lines, and the rest is making sure nobody presses it expecting otherwise.
- *
- * `confirm` on the form rather than a modal: this is an operator tool, the
- * consequence is one sentence, and a native confirm cannot be missed or styled
- * away.
+ * not follow on its own. That is the whole content of this component — the
+ * buttons are two lines, and the rest is making sure the choice between copying
+ * the data and leaving it is made deliberately rather than by whichever button
+ * happened to be nearer.
  */
 export function PromotePanel({ appId, tier }: { appId: string; tier: string }) {
   async function act(formData: FormData): Promise<void> {
@@ -38,9 +36,9 @@ export function PromotePanel({ appId, tier }: { appId: string; tier: string }) {
           Shares a Firebase project with other apps, with its own tenant and
           database. Promoting gives it a project of its own — the installed app
           picks the new backend up on its next launch, with no rebuild.{" "}
-          <strong>Existing Firestore data does not move</strong>: the promoted app
-          starts against an empty database, and its users&rsquo; documents stay
-          behind in the pool.
+          <strong>The app&rsquo;s Firestore data does not follow on its own</strong> —
+          copy it across, or promote knowing its users&rsquo; existing documents
+          stay behind in the pool.
         </p>
       </div>
 

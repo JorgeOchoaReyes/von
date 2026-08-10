@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { BuildStatus, newRunId } from "@von/core";
-import { assessHealth, attributeCrash, classifyChange } from "@von/release";
+import { assessHealth, attributeCrash, decideRelease } from "@von/release";
 import { authOptionsFromEnv, requireApiKey } from "./auth.ts";
 import { adoptedRepoReadiness, checkReadiness, logReadiness } from "./readiness.ts";
 import { createPersistence } from "./store.ts";
@@ -366,10 +366,29 @@ app.post("/v1/apps/:id/chat", async (c) => {
   });
 });
 
-/** Classify a change set without running the agent — used by CI and the admin UI. */
+/**
+ * Classify a change set without running the agent — used by CI and the admin UI.
+ *
+ * Routed through `decideRelease`, not the raw classifier, so it cannot disagree
+ * with what publishing the same change would actually do. An endpoint whose
+ * whole purpose is answering "what would this cost?" is worse than useless if
+ * it says "about a minute" where publish would spend ten.
+ */
 app.post("/v1/apps/:id/classify", async (c) => {
-  const body = await c.req.json<Parameters<typeof classifyChange>[0]>();
-  return c.json(classifyChange(body));
+  const target = await store.getApp(c.req.param("id"));
+  if (!target) return c.json({ error: "not found" }, 404);
+
+  const body = await c.req.json<Parameters<typeof decideRelease>[0]>();
+  const releases = await store.listReleases(target.id);
+
+  return c.json(
+    decideRelease(body, {
+      runtimeVersion: target.runtimeVersion,
+      builtRuntimeVersions: releases
+        .filter((r) => r.status === "succeeded" && r.artifactUrl)
+        .map((r) => r.runtimeVersion),
+    }),
+  );
 });
 
 export default app;

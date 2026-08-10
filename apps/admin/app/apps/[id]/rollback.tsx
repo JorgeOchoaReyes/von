@@ -25,9 +25,10 @@ export function RollbackPanel({ appId, health }: { appId: string; health: Releas
     revalidatePath(`/apps/${id}`);
   }
 
-  if (!health.latest) {
-    return <div className="empty">Nothing published yet.</div>;
-  }
+  // Nothing to say about the health of releases that do not exist. The table
+  // below already renders the empty state, and saying it twice reads like two
+  // different things are missing.
+  if (!health.latest) return null;
 
   return (
     <div className={`card health ${health.suspect ? "suspect" : ""}`}>

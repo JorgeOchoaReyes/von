@@ -53,7 +53,17 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
             </tr>
             <tr>
               <th>EAS project</th>
-              <td>{app.easProjectId ?? <span className="pill">shell delivery</span>}</td>
+              <td>
+                {app.easProjectId ?? (
+                  // Read off the app's delivery mode rather than assumed. An
+                  // adopted repo has no EAS project and is not shell delivery;
+                  // labelling it so sent an operator looking for a shell binary
+                  // that does not exist.
+                  <span className="pill">
+                    {app.deliveryMode === "shell" ? "shell delivery" : "not created"}
+                  </span>
+                )}
+              </td>
             </tr>
             <tr>
               <th>Update channel</th>
