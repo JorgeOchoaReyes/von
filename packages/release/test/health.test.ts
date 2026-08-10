@@ -108,3 +108,51 @@ test("an app that never published is healthy and has nothing to undo", () => {
   assert.equal(health.rollback.available, false);
   assert.match(health.rollback.reason ?? "", /never been published/);
 });
+
+test("the install link comes from the last native build, not the last release", () => {
+  // The failure this prevents: an OTA is the newest release and has no artifact
+  // of its own, so reading the link off `latest` shows nothing to install for an
+  // app that has a perfectly good binary.
+  const build = release({
+    kind: "native",
+    artifactUrl: "https://expo.dev/artifacts/eas/abc.apk",
+    runtimeVersion: "1.1.0",
+  });
+  const ota = release({ runtimeVersion: "1.1.0" });
+
+  const health = assessHealth([build, ota]);
+
+  assert.equal(health.latest?.id, ota.id);
+  assert.equal(health.install?.url, "https://expo.dev/artifacts/eas/abc.apk");
+  assert.equal(health.install?.releaseId, build.id);
+});
+
+test("a build that failed is not offered as an install", () => {
+  // The workflow reports back whatever happened, so a failed run can still
+  // carry a URL. Linking to it is worse than linking to nothing.
+  const failed = release({ kind: "native", status: "failed", artifactUrl: "https://x/broken.apk" });
+
+  assert.equal(assessHealth([failed]).install, null);
+});
+
+test("a build in flight is reported while the old link still stands", () => {
+  const shipped = release({
+    kind: "native",
+    artifactUrl: "https://expo.dev/artifacts/eas/old.apk",
+  });
+  const inFlight = release({ kind: "native", status: "queued", artifactUrl: null });
+
+  const health = assessHealth([shipped, inFlight]);
+
+  // Both are true at once, and the UI needs both: there is something to install,
+  // and it is not the change that was just published.
+  assert.equal(health.install?.url, "https://expo.dev/artifacts/eas/old.apk");
+  assert.equal(health.building, true);
+});
+
+test("an app with nothing built has no install and is not building", () => {
+  const health = assessHealth([release()]);
+
+  assert.equal(health.install, null);
+  assert.equal(health.building, false);
+});

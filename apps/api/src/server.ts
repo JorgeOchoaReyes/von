@@ -197,11 +197,17 @@ app.post("/v1/apps/:id/releases/:releaseId/complete", async (c) => {
     return c.json({ error: `status must be one of ${BuildStatus.options.join(", ")}` }, 400);
   }
 
+  // A failed workflow still reports, and its capture step produced nothing, so
+  // both fields arrive as "". Stored raw, an empty artifact URL renders as an
+  // install button that goes nowhere, and an empty update group is a handle on
+  // no bundle at all. Absent and empty mean the same thing here.
+  const blank = (v: string | undefined): string | null => (v?.trim() ? v.trim() : null);
+
   try {
     const updated = await store.updateRelease(c.req.param("releaseId"), {
       status: status.data,
-      externalId: body.updateGroup ?? null,
-      artifactUrl: body.artifactUrl ?? null,
+      externalId: blank(body.updateGroup),
+      artifactUrl: blank(body.artifactUrl),
     });
     // Only the fields the workflow is allowed to set come back, so a compromised
     // repo cannot read the rest of the record.
@@ -321,7 +327,7 @@ app.post("/v1/apps/:id/chat", async (c) => {
     await stream.writeSSE({ event: "run.start", data: JSON.stringify({ runId }) });
 
     try {
-      const result = await previewChange(sessions, target, {
+      const result = await previewChange(store, sessions, target, {
         instruction: message,
         onEvent: (ev) => {
           // Fire-and-forget: the agent generator must not stall on the socket.

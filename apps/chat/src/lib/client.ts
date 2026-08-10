@@ -152,12 +152,22 @@ export async function publish(appId: string): Promise<ReleaseInfo> {
   };
 }
 
-/** Is the live release in trouble, and can it be undone? */
+/** A build the user can put on their own phone. */
+export interface InstallInfo {
+  url: string;
+  runtimeVersion: string;
+  createdAt: number;
+}
+
+/** Is the live release in trouble, can it be undone, and is there a build to install? */
 export interface HealthInfo {
   crashReports: number;
   suspect: boolean;
   publishedAt: number | null;
   rollback: { available: boolean; to: string | null; reason: string | null };
+  install: InstallInfo | null;
+  /** A native build is in flight, so `install` predates the change being published. */
+  building: boolean;
 }
 
 export async function getHealth(appId: string): Promise<HealthInfo> {
@@ -169,6 +179,8 @@ export async function getHealth(appId: string): Promise<HealthInfo> {
     suspect: boolean;
     latest: { createdAt: number } | null;
     rollback: { available: boolean; to: string | null; reason: string | null };
+    install: { url: string; runtimeVersion: string; createdAt: number } | null;
+    building: boolean;
   };
 
   return {
@@ -176,6 +188,10 @@ export async function getHealth(appId: string): Promise<HealthInfo> {
     suspect: body.suspect,
     publishedAt: body.latest?.createdAt ?? null,
     rollback: body.rollback,
+    // Defaulted rather than assumed present: the chat app is shipped separately
+    // from the control plane and may be talking to one that predates this field.
+    install: body.install ?? null,
+    building: body.building ?? false,
   };
 }
 

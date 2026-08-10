@@ -1,0 +1,126 @@
+name: EAS Build (Android APK)
+
+# The only path onto a phone.
+#
+# OTA updates reach builds that are already installed; they cannot install one.
+# So the first release of every app runs here, and so does every later change
+# the classifier calls native — a new dependency, an edited app.json, anything
+# that changes what the binary contains. Roughly ten minutes against about one
+# for an OTA, which is why it is dispatched deliberately and never on push.
+#
+# The APK is `distribution: internal` and self-signed: installable from the link
+# this reports back, on any Android device that allows unknown sources. That is
+# the whole delivery mechanism for now — store submission is a separate step
+# with its own credentials.
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "eas.json build profile"
+        type: string
+        default: "preview"
+      release_id:
+        description: "Von release this run belongs to; reported back on finish"
+        type: string
+        required: false
+      app_id:
+        description: "Von app id"
+        type: string
+        default: "{{APP_ID}}"
+
+# One build at a time per app. Two concurrent builds race to report back, and
+# the loser overwrites the winner's artifact URL with a link to an older binary.
+# `cancel-in-progress: false` because a build already running is usually the one
+# someone is waiting on.
+concurrency:
+  group: android-build-{{APP_ID}}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: production
+    # EAS queue time plus the build itself. The default 360 would let a stuck
+    # run hold the concurrency group for six hours.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # Same gate as the OTA workflow. Ten minutes of build time is an
+      # expensive way to find a type error.
+      - name: Type-check before building
+        run: pnpm turbo type-check
+
+      - name: Build the APK
+        id: build
+        working-directory: apps/expo
+        env:
+          PROFILE: ${{ inputs.profile || 'preview' }}
+        run: |
+          set -euo pipefail
+          # --non-interactive generates the Android keystore on first run rather
+          # than prompting; there is no human here to answer. (iOS is not built
+          # this way — it needs an Apple account interactively at least once.)
+          #
+          # --wait blocks until EAS finishes and exits non-zero on failure, so
+          # the job status below is the build's real outcome and not just
+          # "the build was queued".
+          out=$(eas build \
+            --platform android \
+            --profile "$PROFILE" \
+            --non-interactive \
+            --wait \
+            --json)
+          echo "$out"
+          # The artifact is the deliverable: without the URL the build finished
+          # and nobody can install it. Both field names are read because EAS
+          # renamed buildUrl to applicationArchiveUrl.
+          url=$(echo "$out" | jq -r '
+            (if type == "array" then .[0] else . end)
+            | .artifacts
+            | (.applicationArchiveUrl // .buildUrl // empty)
+          ')
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          [ -n "$url" ] || { echo "build finished with no artifact URL"; exit 1; }
+          echo "APK: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      # Reported whatever happened, including failure. A release left at
+      # `queued` is indistinguishable from one still building, and the control
+      # plane would keep showing "installing" for a build that died.
+      - name: Report the outcome to Von
+        if: always() && inputs.release_id != ''
+        env:
+          VON_API_URL: ${{ secrets.VON_API_URL }}
+          VON_RELEASE_TOKEN: ${{ secrets.VON_RELEASE_TOKEN }}
+          APP_ID: ${{ inputs.app_id || '{{APP_ID}}' }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          STATUS: ${{ job.status == 'success' && 'succeeded' || 'failed' }}
+          ARTIFACT_URL: ${{ steps.build.outputs.url }}
+        run: |
+          set -euo pipefail
+          [ -n "$VON_API_URL" ] || { echo "VON_API_URL unset; skipping report"; exit 0; }
+          curl -fsS -X POST \
+            "$VON_API_URL/v1/apps/$APP_ID/releases/$RELEASE_ID/complete" \
+            -H "content-type: application/json" \
+            -H "x-von-release-token: $VON_RELEASE_TOKEN" \
+            -d "{\"status\":\"$STATUS\",\"artifactUrl\":\"${ARTIFACT_URL:-}\"}"

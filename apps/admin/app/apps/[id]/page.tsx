@@ -19,6 +19,12 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
     getHealth(id).catch(() => null),
   ]);
 
+  // The newest build anyone can actually install. OTA releases have no artifact
+  // of their own — they land on a binary produced by one of these — so the
+  // install link has to come from the last *native* release that succeeded, not
+  // from the last release.
+  const installable = releases.find((r) => r.artifactUrl && r.status === "succeeded");
+
   return (
     <>
       <h1>{app.name}</h1>
@@ -75,6 +81,32 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
         minute with no review step, so this is the record that makes undo possible.
       </p>
 
+      <div className="card">
+        <strong>Install on a device</strong>
+        <br />
+        {installable ? (
+          <>
+            <a href={installable.artifactUrl!}>Download the APK</a>{" "}
+            <span className="sub">
+              built {new Date(installable.createdAt).toLocaleString()} · runtime{" "}
+              {installable.runtimeVersion}
+            </span>
+            <p className="sub">
+              Self-signed and internally distributed, so Android will ask for
+              permission to install from an unknown source. Updates after this one
+              arrive over the air on the same runtime version — no reinstall.
+            </p>
+          </>
+        ) : (
+          <p className="sub">
+            No installable build yet. An APK is produced by a native release —
+            the first publish, and any later change to dependencies or app config.
+            Purely JavaScript changes ship over the air to a build that already
+            exists.
+          </p>
+        )}
+      </div>
+
       {health ? <RollbackPanel appId={id} health={health} /> : null}
 
       {releases.length === 0 ? (
@@ -111,6 +143,12 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
                 </td>
                 <td>
                   <span className={`pill ${r.status}`}>{r.status}</span>
+                  {r.artifactUrl ? (
+                    <>
+                      <br />
+                      <a href={r.artifactUrl}>APK</a>
+                    </>
+                  ) : null}
                 </td>
                 <td>{r.crashReports > 0 ? r.crashReports : "—"}</td>
               </tr>

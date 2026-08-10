@@ -87,6 +87,13 @@ preview:  agent edits the working tree -> web preview -> classify what
 publish:  commit & push -> dispatch OTA or build -> record the runtime version
 ```
 
+An over-the-air update reaches a build that is already installed; it cannot
+install one. So the classifier is asked two questions, not one — *does this
+change the binary?* and *is there a binary?* — and the first release of every
+app is a build regardless of what it changed. Otherwise the very first
+instruction, which is almost always a JavaScript edit, would be announced as
+reaching the user's app in about a minute when no app exists on any phone.
+
 Nothing leaves the session until the user publishes. A preview session holds an
 open checkout and a Metro dev server per app, so the first turn costs a few
 seconds to boot and every turn after it fast-refreshes in place. Sessions are
@@ -106,7 +113,7 @@ origins keep one customer's previewed code from reading another's.
 | Reject | `DELETE /v1/apps/:id/preview` — back to the last published state |
 | Undo a release | `POST /v1/apps/:id/rollback` — republish the previous update |
 | History | `GET /v1/apps/:id/releases` — what shipped, newest first |
-| Health | `GET /v1/apps/:id/health` — is the newest release crashing, and can it be undone |
+| Health | `GET /v1/apps/:id/health` — is the newest release crashing, can it be undone, and where is the installable build |
 | Promote | `POST /v1/apps/:id/promote` — pooled backend to a Firebase project of its own, with or without its data |
 | Preview state | `GET /v1/apps/:id/preview` — URL and what is pending |
 | One app, no chat | `POST /v1/apps/:id/update` — preview and publish in one, for scripts |
@@ -240,7 +247,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (215 tests overall; the two UIs are typechecked and built, not unit-tested)
+- OTA-vs-native classifier and blueprint token guard (228 tests overall; the two UIs are typechecked and built, not unit-tested)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
@@ -259,6 +266,9 @@ Built and tested:
 - both UIs surface it: the console lists every release with its crash count and
   a rollback button, and the chat app interrupts with one when devices start
   failing to open
+- a native build path — an installable Android APK, dispatched for the first
+  release of every app and for every later change to dependencies or app config,
+  with the install link surfaced in both UIs
 - pooled -> dedicated promotion — a Firebase project of its own, picked up on the
   app's next launch with no rebuild, with the app's Firestore data copied across
 - a Fleet page: preview which apps an instruction would touch, then apply
@@ -284,6 +294,10 @@ Not built yet:
   export/import, but an export is a live snapshot: writes during the cutover can
   be lost. Freezing writes for the window is the missing piece, so today this
   suits apps with light or paused traffic.
+- **iOS builds.** Android is self-signed and installs from a link. iOS cannot
+  be: it needs an Apple developer account, and EAS wants it interactively at
+  least once, so it is not something the platform can do unattended on a user's
+  behalf yet.
 - store submission (TestFlight / Play internal)
 
 ### Relationship to ByteLearning

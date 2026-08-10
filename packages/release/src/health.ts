@@ -51,9 +51,33 @@ export function attributeCrash(releases: Release[], signal: CrashSignal): Releas
   return ordered.find((r) => r.runtimeVersion === signal.runtimeVersion) ?? null;
 }
 
+/**
+ * A binary someone can put on a phone.
+ *
+ * OTA releases have no artifact of their own — they land on a binary a native
+ * release produced — so "where do I install this?" is never answered by the
+ * newest release. It is answered by the newest *native* one that finished.
+ */
+export interface InstallableBuild {
+  releaseId: string;
+  url: string;
+  /** OTA updates only reach builds on this runtime, so it belongs next to the link. */
+  runtimeVersion: string;
+  createdAt: number;
+}
+
 export interface ReleaseHealth {
   /** The newest release, or null for an app that has never published. */
   latest: Release | null;
+  /** The newest installable build, or null before the first one finishes. */
+  install: InstallableBuild | null;
+  /**
+   * A native build is queued or running, so `install` is the *previous* binary
+   * and does not contain the change being published. Said out loud because the
+   * alternative is a user installing a ten-minute-old APK and reporting that
+   * their change never arrived.
+   */
+  building: boolean;
   /** Crash signals attributed to it. Advisory — see the note above. */
   crashReports: number;
   /** True once the count passes the threshold worth surfacing. */
@@ -75,10 +99,26 @@ export interface ReleaseHealth {
  * undo it?" separately will show a button that fails when pressed.
  */
 export function assessHealth(releases: Release[], threshold = 3): ReleaseHealth {
-  const latest = [...releases].sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+  const ordered = [...releases].sort((a, b) => b.createdAt - a.createdAt);
+  const latest = ordered[0] ?? null;
+
+  // `succeeded` and not merely "has a URL": a failed build reports back too, and
+  // linking to a binary whose build failed is worse than linking to nothing.
+  const built = ordered.find((r) => r.status === "succeeded" && r.artifactUrl);
 
   const health: ReleaseHealth = {
     latest,
+    install: built
+      ? {
+          releaseId: built.id,
+          url: built.artifactUrl!,
+          runtimeVersion: built.runtimeVersion,
+          createdAt: built.createdAt,
+        }
+      : null,
+    building: ordered.some(
+      (r) => r.kind === "native" && (r.status === "queued" || r.status === "running"),
+    ),
     crashReports: latest?.crashReports ?? 0,
     // A single report is noise: one device, one bad network moment, one user on
     // an OS nobody tested. A handful in a row is a pattern.

@@ -38,7 +38,7 @@ export function updateRoutes(
     if (!instruction) return c.json({ error: "instruction is required" }, 400);
 
     try {
-      return c.json(await previewChange(sessions, target, { instruction }));
+      return c.json(await previewChange(store, sessions, target, { instruction }));
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }

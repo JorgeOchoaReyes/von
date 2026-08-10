@@ -3,7 +3,7 @@ import { GitWorkspace, runAgent, type AgentEvent } from "@von/agent";
 import { diffDependencies } from "@von/agent";
 import { newReleaseId, type Release } from "@von/core";
 import {
-  classifyChange,
+  decideRelease,
   rollback as rollbackRelease,
   shipChange,
   type ReleaseDecision,
@@ -107,6 +107,20 @@ export function openWorkspace(app: App, github: GitHubCtx): Promise<GitWorkspace
 }
 
 /**
+ * Runtime versions that have a finished, installable binary.
+ *
+ * `succeeded` *and* an artifact: a native release that failed still has a
+ * runtime version, and counting it would convince the classifier a build exists
+ * where none does — which is precisely the state this is here to detect.
+ */
+async function builtRuntimeVersions(store: Store, appId: string): Promise<string[]> {
+  const releases = await store.listReleases(appId);
+  return releases
+    .filter((r) => r.status === "succeeded" && r.artifactUrl)
+    .map((r) => r.runtimeVersion);
+}
+
+/**
  * Apply an instruction to the app's working tree and show the result.
  *
  * Nothing is committed and nothing ships. The tree stays dirty on the session
@@ -114,6 +128,7 @@ export function openWorkspace(app: App, github: GitHubCtx): Promise<GitWorkspace
  * because after the commit git has nothing left to report.
  */
 export async function previewChange(
+  store: Store,
   sessions: Sessions,
   app: App,
   opts: PreviewOptions,
@@ -152,8 +167,16 @@ export async function previewChange(
         };
   sessions.setPending(app.id, pending);
 
-  const decision = classifyChange(
+  // Classified against what is installed, not just against the diff. The
+  // preview bar quotes the cost of publishing before the user commits to it,
+  // and quoting "about a minute" for a change that will in fact trigger a
+  // ten-minute build is the version of this that erodes trust fastest.
+  const decision = decideRelease(
     pending ?? { files: [], addedDependencies: [], removedDependencies: [] },
+    {
+      runtimeVersion: app.runtimeVersion,
+      builtRuntimeVersions: await builtRuntimeVersions(store, app.id),
+    },
   );
 
   let previewUrl: string | null = null;
@@ -219,6 +242,10 @@ export async function publishChange(
   // would leave the app's CI with nothing to name.
   const releaseId = newReleaseId();
 
+  // Which runtime versions actually have a binary. Without this the first
+  // publish of every app — nearly always a pure-JavaScript change — classifies
+  // as an OTA update and is announced as reaching the user's app in a minute,
+  // when no app has been built and nothing is listening on the channel.
   const ship = await shipChange(
     pending,
     {
@@ -228,6 +255,7 @@ export async function publishChange(
       runtimeVersion: app.runtimeVersion,
       branch: PROD_BRANCH,
       releaseId,
+      builtRuntimeVersions: await builtRuntimeVersions(store, app.id),
     },
     githubDispatcher(github),
   );
@@ -351,7 +379,7 @@ export async function updateApp(
   opts: UpdateOptions,
 ): Promise<UpdateResult> {
   try {
-    const preview = await previewChange(sessions, app, { ...opts, startPreview: false });
+    const preview = await previewChange(store, sessions, app, { ...opts, startPreview: false });
     if (preview.changedFiles.length === 0) {
       return { appId: app.id, commitSha: null, ship: null, summary: preview.summary };
     }

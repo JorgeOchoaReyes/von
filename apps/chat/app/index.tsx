@@ -11,6 +11,7 @@ import {
   View,
 } from "react-native";
 import { HealthBanner } from "../src/components/HealthBanner";
+import { InstallCard } from "../src/components/InstallCard";
 import { PreviewPane } from "../src/components/PreviewPane";
 import { PublishBar } from "../src/components/PublishBar";
 import {
@@ -196,6 +197,7 @@ export default function ChatScreen() {
       keyboardVerticalOffset={90}
     >
       <HealthBanner health={health} busy={publishing} onRollback={onRollback} />
+      <InstallCard health={health} />
 
       <View style={styles.previewPane}>
         <PreviewPane url={preview?.url ?? null} busy={busy} error={preview?.error} />

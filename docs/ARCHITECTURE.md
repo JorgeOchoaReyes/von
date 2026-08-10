@@ -444,6 +444,23 @@ essentially verbatim.
 ByteLearning a human wrote and reviewed the diff before pushing; here an agent
 wrote it, and OTA reaches devices with no review step in between.
 
+**Also added:** `eas-android-apk.yml`. ByteLearning had no build workflow
+because the two hand-offs it left to a human were deciding OTA-vs-native and
+installing the build — a person ran `eas build` and installed the result. Both
+have to be automatic here, so a native release dispatches this workflow and it
+reports the artifact URL back to the control plane. That URL is the app's only
+route onto a phone: previews are a browser, and updates reach a binary that is
+already there.
+
+It follows that the classifier alone is not enough to route a release. It
+answers "does this change the binary?", which presumes one exists; on an app
+that has never been built the honest answer to *any* change is still "build it".
+So `decideRelease` asks both questions, and escalates an OTA to a build whenever
+no finished binary exists at the app's current runtime version. That covers the
+first release of every app and the subtler case where a native release bumped
+the runtime version and then failed — leaving every subsequent update publishing
+to a channel no installed build is listening on.
+
 ---
 
 ## 11. Decision: Firebase or Supabase for the data tier?

@@ -54,10 +54,17 @@ curl -s -X POST localhost:8787/v1/apps/$APP/publish
 The first turn takes a minute or so — the session clones the repo and installs
 its dependencies before Metro starts. Every turn after that fast-refreshes.
 
-Publishing needs the repository's own workflows (`eas-update.yml` and friends)
-and its `EXPO_TOKEN` secret to be in place, so with only these two tokens the
-publish step dispatches and then fails inside the repo's Actions. Everything up
-to and including the commit and push is real.
+Publishing needs the repository's own workflows (`eas-update.yml`,
+`eas-android-apk.yml`, `eas-rollback.yml`) and its `EXPO_TOKEN` secret to be in
+place, so with only these two tokens the publish step dispatches and then fails
+inside the repo's Actions. Everything up to and including the commit and push is
+real.
+
+Note the first publish of any app dispatches the **build** workflow, not the
+update one, whatever the change was: an over-the-air update has nothing to land
+on until a binary exists. That build takes about ten minutes and reports an APK
+URL back to `/v1/apps/:id/releases/:releaseId/complete`, which is what the
+console's install link and the chat app's install card read.
 
 **`GET /v1/readiness` tells you where you are** at any point — which
 capabilities are configured, and what each gap blocks:
