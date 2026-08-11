@@ -1,12 +1,14 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
-import { newRunId } from "@von/core";
-import { classifyChange } from "@von/release";
+import { BuildStatus, newRunId } from "@von/core";
+import { assessHealth, attributeCrash, decideRelease } from "@von/release";
 import { authOptionsFromEnv, requireApiKey } from "./auth.ts";
 import { adoptedRepoReadiness, checkReadiness, logReadiness } from "./readiness.ts";
+import { preflight } from "./preflight.ts";
 import { createPersistence } from "./store.ts";
 import { githubCtx, startGenesis } from "./provision.ts";
+import { promoteApp, PromotionRefused } from "./promote.ts";
 import { previewChange } from "./update.ts";
 import { createPreviewSessions, startPreviewSweeper } from "./preview.ts";
 import { previewProxy } from "./proxy.ts";
@@ -130,6 +132,162 @@ app.post("/v1/apps/:id/provision", async (c) => {
 });
 
 /**
+ * Promote an app from the shared pool to its own Firebase project.
+ *
+ * Cheap because the app fetches its backend config at boot rather than having
+ * it compiled in (docs/ARCHITECTURE.md §4): the installed build picks up the
+ * new backend on its next launch, with no rebuild and no store review.
+ *
+ * It does not move data, and refuses until the caller says so explicitly.
+ */
+app.post("/v1/apps/:id/promote", async (c) => {
+  const target = await store.getApp(c.req.param("id"));
+  if (!target) return c.json({ error: "not found" }, 404);
+
+  type PromoteBody = { migrateData?: boolean; acknowledgeDataReset?: boolean };
+  const body = await c.req
+    .json<PromoteBody>()
+    // Promotion takes a body but a caller may reasonably send none; the missing
+    // decision about data is then refused below, with the reason.
+    .catch(() => ({}) as PromoteBody);
+
+  try {
+    const result = await promoteApp(store, pools, target, {
+      migrateData: body.migrateData,
+      acknowledgeDataReset: body.acknowledgeDataReset,
+    });
+    return c.json(result);
+  } catch (err) {
+    // A refusal is a statement about this app's state, not a server fault.
+    const status = err instanceof PromotionRefused ? 409 : 500;
+    return c.json({ error: (err as Error).message }, status);
+  }
+});
+
+/**
+ * A generated app's CI reporting what its release actually did.
+ *
+ * The publish path dispatches a workflow and cannot know the outcome — the EAS
+ * update group, which identifies a published bundle, only exists once the
+ * workflow has run. Without this callback every release stays `queued` with no
+ * group, and rollback has nothing to republish. It is the piece that makes undo
+ * real rather than theoretical.
+ *
+ * Authenticated by the app's **own** release token, not the platform API key:
+ * handing every generated repository the platform key would let one customer's
+ * workflow act on every other customer's app.
+ */
+app.post("/v1/apps/:id/releases/:releaseId/complete", async (c) => {
+  const target = await store.getApp(c.req.param("id"));
+  const presented = c.req.header("x-von-release-token")?.trim();
+
+  // Same answer for an unknown app and a wrong token: distinguishing them would
+  // confirm which app ids exist.
+  if (!target || !target.releaseToken || presented !== target.releaseToken) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const body = await c.req.json<{
+    status?: string;
+    updateGroup?: string;
+    artifactUrl?: string;
+  }>();
+
+  const status = BuildStatus.safeParse(body.status);
+  if (!status.success) {
+    return c.json({ error: `status must be one of ${BuildStatus.options.join(", ")}` }, 400);
+  }
+
+  // A failed workflow still reports, and its capture step produced nothing, so
+  // both fields arrive as "". Stored raw, an empty artifact URL renders as an
+  // install button that goes nowhere, and an empty update group is a handle on
+  // no bundle at all. Absent and empty mean the same thing here.
+  const blank = (v: string | undefined): string | null => (v?.trim() ? v.trim() : null);
+
+  try {
+    const updated = await store.updateRelease(c.req.param("releaseId"), {
+      status: status.data,
+      externalId: blank(body.updateGroup),
+      artifactUrl: blank(body.artifactUrl),
+    });
+    // Only the fields the workflow is allowed to set come back, so a compromised
+    // repo cannot read the rest of the record.
+    return c.json({ id: updated.id, status: updated.status });
+  } catch {
+    return c.json({ error: "not found" }, 404);
+  }
+});
+
+/**
+ * An installed app reporting that it failed to start.
+ *
+ * The other half of rollback. Undo is one call, but nobody is watching: an OTA
+ * lands on every device in about a minute, and if it crashes on launch the
+ * person best placed to notice is holding an app that will not open. So the app
+ * reports for itself.
+ *
+ * Unauthenticated, because a client app holds no secret worth the name —
+ * anything shipped in a bundle is readable by whoever has the bundle. That is
+ * precisely why the count only ever *raises a question* with whoever published
+ * the change. Nothing here rolls anything back.
+ */
+app.post("/v1/apps/:id/crash", async (c) => {
+  const appId = c.req.param("id");
+  const target = await store.getApp(appId);
+  if (!target) return c.json({ error: "not found" }, 404);
+
+  const body = await c.req.json<{ runtimeVersion?: string; updateGroup?: string }>();
+  if (!body.runtimeVersion) return c.json({ error: "runtimeVersion is required" }, 400);
+
+  const releases = await store.listReleases(appId);
+  const blamed = attributeCrash(releases, {
+    runtimeVersion: body.runtimeVersion,
+    updateGroup: body.updateGroup ?? null,
+  });
+
+  // Dropped rather than guessed. A signal put on the wrong release would show a
+  // crash count against a bundle that is fine, and invite undoing it.
+  if (!blamed) return c.json({ recorded: false, reason: "no matching release" }, 202);
+
+  const updated = await store.incrementCrashReports(blamed.id);
+  console.warn(
+    `[health] ${appId} crash on ${blamed.id} (${updated.crashReports} total)`,
+  );
+  return c.json({ recorded: true }, 202);
+});
+
+/**
+ * Is the newest release in trouble, and can it be undone?
+ *
+ * Both halves in one response on purpose: a UI that asks "is this bad?" and
+ * "can I undo it?" separately ends up showing a button that fails when pressed.
+ */
+app.get("/v1/apps/:id/health", async (c) => {
+  const appId = c.req.param("id");
+  if (!(await store.getApp(appId))) return c.json({ error: "not found" }, 404);
+  return c.json(assessHealth(await store.listReleases(appId)));
+});
+
+/**
+ * Which credentials actually work.
+ *
+ * The companion to readiness, and the half that matters on the day credentials
+ * are added: readiness proves a variable is set, this proves the provider
+ * accepts it and belongs to the account you meant. Every call it makes is
+ * read-only, so it is safe to run against a live deployment.
+ *
+ * Not run at boot. It is several round trips to other people's APIs, and a
+ * control plane that will not start because Expo is having an afternoon is
+ * worse than one that starts and says so.
+ */
+app.get("/v1/preflight", async (c) => {
+  const result = await preflight();
+  // 503 when something is genuinely broken, so a script can gate on the status
+  // code without parsing the body.
+  return c.json(result, result.ok ? 200 : 503);
+});
+
+/**
  * Which credentials are present, and what each gap blocks.
  *
  * Credentials arrive in stages, and the alternative to this is discovering a
@@ -189,7 +347,7 @@ app.post("/v1/apps/:id/chat", async (c) => {
     await stream.writeSSE({ event: "run.start", data: JSON.stringify({ runId }) });
 
     try {
-      const result = await previewChange(sessions, target, {
+      const result = await previewChange(store, sessions, target, {
         instruction: message,
         onEvent: (ev) => {
           // Fire-and-forget: the agent generator must not stall on the socket.
@@ -228,10 +386,29 @@ app.post("/v1/apps/:id/chat", async (c) => {
   });
 });
 
-/** Classify a change set without running the agent — used by CI and the admin UI. */
+/**
+ * Classify a change set without running the agent — used by CI and the admin UI.
+ *
+ * Routed through `decideRelease`, not the raw classifier, so it cannot disagree
+ * with what publishing the same change would actually do. An endpoint whose
+ * whole purpose is answering "what would this cost?" is worse than useless if
+ * it says "about a minute" where publish would spend ten.
+ */
 app.post("/v1/apps/:id/classify", async (c) => {
-  const body = await c.req.json<Parameters<typeof classifyChange>[0]>();
-  return c.json(classifyChange(body));
+  const target = await store.getApp(c.req.param("id"));
+  if (!target) return c.json({ error: "not found" }, 404);
+
+  const body = await c.req.json<Parameters<typeof decideRelease>[0]>();
+  const releases = await store.listReleases(target.id);
+
+  return c.json(
+    decideRelease(body, {
+      runtimeVersion: target.runtimeVersion,
+      builtRuntimeVersions: releases
+        .filter((r) => r.status === "succeeded" && r.artifactUrl)
+        .map((r) => r.runtimeVersion),
+    }),
+  );
 });
 
 export default app;

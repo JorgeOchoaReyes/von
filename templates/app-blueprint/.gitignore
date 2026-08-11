@@ -5,3 +5,7 @@ dist/
 .env
 .env.local
 .DS_Store
+
+# Written by the Play submit workflow and removed when it finishes. Listed
+# so a local `eas submit` cannot commit a service account key by accident.
+play-service-account.json

@@ -57,6 +57,7 @@ export const COLLECTIONS = {
   apps: "apps",
   runtimeConfigs: "runtimeConfigs",
   resources: "resources",
+  releases: "releases",
   pools: "pools",
   poolAssignments: "poolAssignments",
 } as const;

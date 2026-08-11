@@ -289,7 +289,16 @@ export interface FirestoreOutputs extends Record<string, unknown> {
 export function firestoreDriver(ctx: GoogleCtx): Driver<FirestoreSpec, FirestoreOutputs> {
   return {
     kind: "firebase.firestore",
-    key: (s) => `firebase.firestore:${s.appId}`,
+    /**
+     * Keyed by database, not just by app.
+     *
+     * A pooled app owns a named database inside a pool project; promoting it to
+     * a dedicated backend means creating `(default)` in a *different* project.
+     * Those are two resources, and keying only on the app id would make the
+     * ledger short-circuit the second one — promotion would appear to succeed
+     * while the new project had no database at all.
+     */
+    key: (s) => `firebase.firestore:${s.appId}:${s.databaseId}`,
 
     async read(spec) {
       const db = await gapi(

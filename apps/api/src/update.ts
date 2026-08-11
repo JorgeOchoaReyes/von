@@ -1,10 +1,15 @@
 import type { App } from "@von/core";
 import { GitWorkspace, runAgent, type AgentEvent } from "@von/agent";
 import { diffDependencies } from "@von/agent";
+import { newReleaseId, type Release } from "@von/core";
 import {
-  classifyChange,
-  shipChange,
+  decideRelease,
+  dispatchRelease,
+  nextRuntimeVersion,
+  rollback as rollbackRelease,
+  submitToStore,
   type ReleaseDecision,
+  type RollbackResult,
   type ShipResult,
   type WorkflowDispatcher,
 } from "@von/release";
@@ -104,6 +109,20 @@ export function openWorkspace(app: App, github: GitHubCtx): Promise<GitWorkspace
 }
 
 /**
+ * Runtime versions that have a finished, installable binary.
+ *
+ * `succeeded` *and* an artifact: a native release that failed still has a
+ * runtime version, and counting it would convince the classifier a build exists
+ * where none does — which is precisely the state this is here to detect.
+ */
+async function builtRuntimeVersions(store: Store, appId: string): Promise<string[]> {
+  const releases = await store.listReleases(appId);
+  return releases
+    .filter((r) => r.status === "succeeded" && r.artifactUrl)
+    .map((r) => r.runtimeVersion);
+}
+
+/**
  * Apply an instruction to the app's working tree and show the result.
  *
  * Nothing is committed and nothing ships. The tree stays dirty on the session
@@ -111,6 +130,7 @@ export function openWorkspace(app: App, github: GitHubCtx): Promise<GitWorkspace
  * because after the commit git has nothing left to report.
  */
 export async function previewChange(
+  store: Store,
   sessions: Sessions,
   app: App,
   opts: PreviewOptions,
@@ -149,8 +169,16 @@ export async function previewChange(
         };
   sessions.setPending(app.id, pending);
 
-  const decision = classifyChange(
+  // Classified against what is installed, not just against the diff. The
+  // preview bar quotes the cost of publishing before the user commits to it,
+  // and quoting "about a minute" for a change that will in fact trigger a
+  // ten-minute build is the version of this that erodes trust fastest.
+  const decision = decideRelease(
     pending ?? { files: [], addedDependencies: [], removedDependencies: [] },
+    {
+      runtimeVersion: app.runtimeVersion,
+      builtRuntimeVersions: await builtRuntimeVersions(store, app.id),
+    },
   );
 
   let previewUrl: string | null = null;
@@ -175,6 +203,59 @@ export async function previewChange(
     previewError,
     summary: pending ? decision.reason : "No changes were needed.",
   };
+}
+
+/** Where the blueprint keeps the Expo app config. */
+const APP_JSON = "apps/expo/app.json";
+
+/**
+ * Write a native release's versions into the repository.
+ *
+ * Two numbers, and they do different jobs.
+ *
+ * `expo.version` is the runtime version, because the blueprint sets
+ * `runtimeVersion: { policy: "appVersion" }`. It is the fence: an OTA update
+ * only reaches builds whose runtime version matches, so bumping it here is what
+ * stops a JS bundle that references a newly added native module from landing on
+ * the older binary that lacks it. The control plane records the bump either
+ * way; if it is not also committed, the built binary keeps the old version and
+ * the fence never actually moves — the failure the classifier exists to
+ * prevent, arriving anyway and looking like a mystery crash.
+ *
+ * `android.versionCode` is Android's own ordering. Left at 1 forever, a device
+ * that already has the app can refuse to install a newer APK over it, and Play
+ * rejects a duplicate outright. Not bumped for the first build, which has
+ * nothing to be newer than.
+ */
+export async function bumpNativeVersion(
+  workspace: { read(p: string): Promise<string | null>; write(p: string, c: string): Promise<void> },
+  runtimeVersion: string,
+  hasEarlierBuild: boolean,
+): Promise<void> {
+  const raw = await workspace.read(APP_JSON);
+  if (raw === null) {
+    // An adopted repository that is not laid out like the blueprint. Publishing
+    // still works; the fence is that repo's own business, and saying so is
+    // better than throwing on a path that worked yesterday.
+    console.warn(`[publish] ${APP_JSON} not found — runtime version left to the repo`);
+    return;
+  }
+
+  // Not a regex substitution: app.json is the file the agent is most likely to
+  // have just edited, and a regex would happily rewrite a "version" key that
+  // belongs to something else.
+  const config = JSON.parse(raw) as {
+    expo?: { version?: string; android?: { versionCode?: number } };
+  };
+  if (!config.expo) throw new Error(`${APP_JSON} has no "expo" key`);
+
+  config.expo.version = runtimeVersion;
+  if (hasEarlierBuild) {
+    const android = (config.expo.android ??= {});
+    android.versionCode = (android.versionCode ?? 1) + 1;
+  }
+
+  await workspace.write(APP_JSON, `${JSON.stringify(config, null, 2)}\n`);
 }
 
 /**
@@ -203,6 +284,24 @@ export async function publishChange(
   }
 
   const pending = session.pending;
+
+  // Decided before the commit, because a native release has to change the
+  // repository too: with `runtimeVersion: { policy: "appVersion" }` the runtime
+  // version *is* `expo.version` in app.json, so a bump the control plane records
+  // but never commits moves nothing. The fence that stops a new JS bundle from
+  // landing on a binary without the native module it needs would then never
+  // move, and the classifier's whole purpose would be defeated silently.
+  const built = await builtRuntimeVersions(store, app.id);
+  const decision = decideRelease(pending, {
+    runtimeVersion: app.runtimeVersion,
+    builtRuntimeVersions: built,
+  });
+  const runtimeVersion = nextRuntimeVersion(app.runtimeVersion, decision);
+
+  if (decision.kind === "native") {
+    await bumpNativeVersion(session.workspace, runtimeVersion, built.length > 0);
+  }
+
   const commitSha = await session.workspace.commitAndPush(
     `${(pending.label ?? "Update").slice(0, 68)}\n\nvia Von`,
   );
@@ -211,14 +310,21 @@ export async function publishChange(
     return { appId: app.id, commitSha: null, ship: null, summary: "No changes were needed." };
   }
 
-  const ship = await shipChange(
-    pending,
+  // The release id is minted before the dispatch, not after, because the
+  // workflow is told to report back against it. Deciding the id afterwards
+  // would leave the app's CI with nothing to name.
+  const releaseId = newReleaseId();
+
+  const ship = await dispatchRelease(
+    decision,
     {
       appId: app.id,
       repoFullName,
       channel: app.channel,
       runtimeVersion: app.runtimeVersion,
       branch: PROD_BRANCH,
+      releaseId,
+      builtRuntimeVersions: built,
     },
     githubDispatcher(github),
   );
@@ -227,11 +333,93 @@ export async function publishChange(
     await store.updateApp(app.id, { runtimeVersion: ship.runtimeVersion });
   }
 
+  // Recorded whatever the outcome, including `none`. A release history with the
+  // uninteresting entries filtered out is a history you cannot reason about —
+  // and "the last thing that shipped" is exactly the question rollback asks.
+  await store.recordRelease({
+    ...releaseRecord(app, pending.label ?? "", commitSha, ship),
+    id: releaseId,
+  });
+
   // Cleared only after the dispatch succeeded: a failed dispatch leaves the
   // change pending and republishable rather than committed-but-never-shipped.
   sessions.setPending(app.id, null);
 
   return { appId: app.id, commitSha, ship, summary: ship.decision.reason };
+}
+
+/** The record of what a publish did, in the shape the store keeps. */
+function releaseRecord(
+  app: App,
+  instruction: string,
+  // Nullable because a store submission may have nothing to commit — the
+  // version code moves only when the repo already had one to move.
+  commitSha: string | null,
+  ship: ShipResult,
+): Release {
+  return {
+    id: newReleaseId(),
+    appId: app.id,
+    kind: ship.decision.kind === "native" ? "native" : "ota",
+    reason: ship.decision.reason,
+    channel: app.channel,
+    runtimeVersion: ship.runtimeVersion,
+    // The workflow is dispatched, not finished. Its real outcome arrives later;
+    // claiming success here would make a failed build look like a shipped one.
+    status: ship.dispatched ? "queued" : "succeeded",
+    externalId: null,
+    artifactUrl: null,
+    commitSha,
+    instruction,
+    rolledBackBy: null,
+    isRollback: false,
+    crashReports: 0,
+    createdAt: Date.now(),
+  };
+}
+
+/**
+ * Undo the last release by republishing the one before it.
+ *
+ * Both records are written: the rollback as a new release, and the bad one
+ * marked with what replaced it. Marking rather than deleting keeps the history
+ * honest — and stops the next rollback from choosing the bundle that was just
+ * rejected.
+ */
+export async function rollbackApp(
+  store: Store,
+  app: App,
+  github: GitHubCtx,
+): Promise<RollbackResult> {
+  const repoFullName = requireRepo(app);
+  const releases = await store.listReleases(app.id);
+
+  const result = await rollbackRelease(
+    releases,
+    { appId: app.id, repoFullName, branch: PROD_BRANCH },
+    githubDispatcher(github),
+  );
+
+  const undo: Release = {
+    ...releaseRecord(app, `Roll back to ${result.to.id}`, result.to.commitSha ?? "", {
+      appId: app.id,
+      decision: {
+        kind: "ota",
+        reason: `Restored the update from ${result.to.id}`,
+        triggers: ["rollback"],
+        requiresRuntimeBump: false,
+      },
+      dispatched: "eas-update.yml",
+      runtimeVersion: result.to.runtimeVersion,
+    }),
+    externalId: result.to.externalId,
+    isRollback: true,
+  };
+
+  await store.recordRelease(undo);
+  await store.updateRelease(result.from.id, { rolledBackBy: undo.id });
+
+  return result;
 }
 
 /**
@@ -262,7 +450,7 @@ export async function updateApp(
   opts: UpdateOptions,
 ): Promise<UpdateResult> {
   try {
-    const preview = await previewChange(sessions, app, { ...opts, startPreview: false });
+    const preview = await previewChange(store, sessions, app, { ...opts, startPreview: false });
     if (preview.changedFiles.length === 0) {
       return { appId: app.id, commitSha: null, ship: null, summary: preview.summary };
     }
@@ -270,4 +458,61 @@ export async function updateApp(
   } finally {
     await sessions.close(app.id);
   }
+}
+
+/**
+ * Put the app's current code on Play's internal testing track.
+ *
+ * Separate from publishing, and not something a diff can trigger. Everything
+ * `publishChange` routes follows from what changed; this follows from someone
+ * deciding they want testers on it, which no code change implies.
+ *
+ * It commits an Android version-code bump first. Play rejects a bundle whose
+ * version code it has already seen, and with `appVersionSource: "local"` the
+ * number lives in the repo — so the repo is where it has to move. EAS's own
+ * `autoIncrement` is deliberately off in the production profile: two things
+ * incrementing the same counter is how a submission ends up claiming a number
+ * Play already has.
+ */
+export async function submitApp(
+  store: Store,
+  app: App,
+  github: GitHubCtx,
+): Promise<PublishResult> {
+  const repoFullName = requireRepo(app);
+
+  const workspace = await openWorkspace(app, github);
+  let commitSha: string | null = null;
+  try {
+    await bumpNativeVersion(workspace, app.runtimeVersion, true);
+    commitSha = await workspace.commitAndPush(
+      `Bump Android version code for Play submission\n\nvia Von`,
+    );
+  } finally {
+    // Short-lived on purpose: this is not a preview session, and leaving a
+    // checkout behind would leak a customer's repo onto disk with nothing
+    // tracking it.
+    await workspace.dispose();
+  }
+
+  const releaseId = newReleaseId();
+  const ship = await submitToStore(
+    {
+      appId: app.id,
+      repoFullName,
+      channel: app.channel,
+      runtimeVersion: app.runtimeVersion,
+      branch: PROD_BRANCH,
+      releaseId,
+    },
+    githubDispatcher(github),
+  );
+
+  await store.recordRelease({
+    ...releaseRecord(app, "Submit to Play (internal track)", commitSha, ship),
+    id: releaseId,
+    kind: "store",
+  });
+
+  return { appId: app.id, commitSha, ship, summary: ship.decision.reason };
 }

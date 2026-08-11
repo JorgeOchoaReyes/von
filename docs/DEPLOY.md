@@ -54,10 +54,17 @@ curl -s -X POST localhost:8787/v1/apps/$APP/publish
 The first turn takes a minute or so — the session clones the repo and installs
 its dependencies before Metro starts. Every turn after that fast-refreshes.
 
-Publishing needs the repository's own workflows (`eas-update.yml` and friends)
-and its `EXPO_TOKEN` secret to be in place, so with only these two tokens the
-publish step dispatches and then fails inside the repo's Actions. Everything up
-to and including the commit and push is real.
+Publishing needs the repository's own workflows (`eas-update.yml`,
+`eas-android-apk.yml`, `eas-rollback.yml`) and its `EXPO_TOKEN` secret to be in
+place, so with only these two tokens the publish step dispatches and then fails
+inside the repo's Actions. Everything up to and including the commit and push is
+real.
+
+Note the first publish of any app dispatches the **build** workflow, not the
+update one, whatever the change was: an over-the-air update has nothing to land
+on until a binary exists. That build takes about ten minutes and reports an APK
+URL back to `/v1/apps/:id/releases/:releaseId/complete`, which is what the
+console's install link and the chat app's install card read.
 
 **`GET /v1/readiness` tells you where you are** at any point — which
 capabilities are configured, and what each gap blocks:
@@ -138,6 +145,40 @@ Roles for `von-runtime`: `roles/datastore.user`,
 that holds pool projects, not on the platform project —
 `roles/resourcemanager.projectCreator` and `roles/billing.user`.
 
+### How the control plane authenticates as `von-runtime`
+
+**On Cloud Run: nothing to do.** The service runs as
+`GCP_RUNTIME_SERVICE_ACCOUNT` and the control plane takes its token from the
+instance metadata server, refreshing it before each expiry. No key exists to
+store, leak, or rotate. This is the intended production path.
+
+**Anywhere else** — a VM you manage, a laptop, a container off Google — it needs
+a key, and it signs its own JWT to exchange for tokens:
+
+```bash
+gcloud iam service-accounts keys create von-runtime.json \
+  --iam-account "von-runtime@$VON_PROJECT.iam.gserviceaccount.com"
+
+export GOOGLE_APPLICATION_CREDENTIALS=$PWD/von-runtime.json
+# ...or inline, which is what a secret manager gives you:
+export GOOGLE_SERVICE_ACCOUNT_KEY="$(cat von-runtime.json)"
+```
+
+**For a quick local try**, `GOOGLE_ACCESS_TOKEN` still works:
+
+```bash
+export GOOGLE_ACCESS_TOKEN=$(gcloud auth print-access-token)
+```
+
+Note what that is: a token, not a credential. It expires about an hour after
+it is minted, and a control plane left running past that starts failing
+provisioning with 401s while every environment variable still looks correct.
+Use it to try something, never to run something.
+
+Whichever it finds, the control plane logs the identity at first use —
+`[google] authenticating as service account von-runtime@…` — so a permission
+error is a short conversation rather than a guess.
+
 ### Workload Identity Federation
 
 So CD holds no long-lived key at all. Follow
@@ -164,9 +205,16 @@ gh repo create your-org/app-blueprint --private
 # push the contents of templates/app-blueprint to it, then mark it a template
 ```
 
-> The default branch of generated repositories must be `master`, matching
-> `PROD_BRANCH`. Set it as the template's default branch; the API used here
-> cannot change repository settings after creation.
+Its default branch does **not** have to be `master`. Genesis renames the
+generated repository's branch to `master` if it is anything else — a rename
+rather than a settings change, because at that point no other branch exists to
+point the default at. Naming the template's branch `master` simply skips the
+extra call.
+
+Every branch name in the platform is `master` (`PROD_BRANCH`): what workflows
+trigger on, what the agent pushes to, what previews check out. A generated repo
+on `main` would have workflows watching a branch that does not exist, and
+nothing would run — silently.
 
 ---
 
@@ -236,6 +284,11 @@ description.
 | `von-pools` | The JSON above |
 | `von-pool-web-configs` | Firebase web config per pool project |
 
+Two more secrets are written *into each generated repository* by genesis, not
+created by you: `VON_API_URL` and `VON_RELEASE_TOKEN`. They are how the app's own
+CI reports what a release did — including the EAS update group, which is the only
+handle a rollback has on a published bundle.
+
 ```bash
 printf '%s' "$(openssl rand -hex 32)" | \
   gcloud secrets create von-api-keys --data-file=- --project "$VON_PROJECT"
@@ -268,6 +321,8 @@ logs, which is what you want when diagnosing a deploy:
 | `GCP_PARENT` | `folders/123456789` |
 | `VON_FIRESTORE_DATABASE` | `von-control` |
 | `VON_PREVIEW_HOST` | `preview.example.com` |
+| `VON_MIGRATION_BUCKET` | `von-platform-migrations` — only needed to migrate data on promotion |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT` | Play Developer API service account JSON — only needed to submit to Play (a **secret**, not a variable) |
 | `VON_GITHUB_ORG` | `von-apps` |
 | `VON_TEMPLATE_REPO` | `your-org/app-blueprint` |
 | `VON_PUBLIC_URL` | `https://api.example.com` — baked into every generated app |
@@ -331,6 +386,32 @@ already behind an interface for exactly that reason.
 
 The console has no such constraint: it holds nothing in memory, scales to zero,
 and runs several instances freely.
+
+### Promoting an app to its own Firebase project
+
+```bash
+# Copy the app's Firestore data into its new database.
+curl -s -X POST -H "Authorization: Bearer $VON_API_KEY" \
+     -H 'content-type: application/json' -d '{"migrateData": true}' \
+     https://<service-url>/v1/apps/$APP/promote
+
+# Or start it empty, leaving existing documents in the pool.
+curl -s -X POST -H "Authorization: Bearer $VON_API_KEY" \
+     -H 'content-type: application/json' -d '{"acknowledgeDataReset": true}' \
+     https://<service-url>/v1/apps/$APP/promote
+```
+
+One of the two is required and neither is defaulted. Migration stages the export
+through `VON_MIGRATION_BUCKET`, which must be a GCS bucket **in the same location
+as both databases** — Firestore refuses to export across locations:
+
+```bash
+gcloud storage buckets create "gs://$VON_PROJECT-migrations" \
+  --location="$REGION" --project "$VON_PROJECT"
+```
+
+The export is a live snapshot, so writes during the cutover can be lost. Promote
+apps with real traffic during a quiet window.
 
 ### Rolling back
 

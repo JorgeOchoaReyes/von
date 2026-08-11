@@ -34,11 +34,13 @@ packages/
 templates/
   app-blueprint/  A complete Expo + Firebase monorepo with per-app values as
                   {{TOKENS}}. Push this to its own repo and mark it a template;
-                  genesis copies it and `hydrate` substitutes the values.
+                  genesis copies it, renames the branch to `master`, and
+                  `hydrate` substitutes the values.
 ```
 
-`apps/chat` is app #0 — it is generated from the same blueprint and shipped
-through the same pipeline it sells.
+`apps/chat` is app #0 — the intent is for it to be built and shipped through the
+same pipeline it sells. Today it is hand-written and deployed with the rest of
+this repo; dogfooding it is a later step, not a claim about the present.
 
 ---
 
@@ -85,6 +87,20 @@ preview:  agent edits the working tree -> web preview -> classify what
 publish:  commit & push -> dispatch OTA or build -> record the runtime version
 ```
 
+An over-the-air update reaches a build that is already installed; it cannot
+install one. So the classifier is asked two questions, not one — *does this
+change the binary?* and *is there a binary?* — and the first release of every
+app is a build regardless of what it changed. Otherwise the very first
+instruction, which is almost always a JavaScript edit, would be announced as
+reaching the user's app in about a minute when no app exists on any phone.
+
+A native release also *writes* its runtime version into the repo's `app.json`
+before committing. The policy is `appVersion`, so app.json is where the runtime
+version actually lives: a bump the control plane records but never commits
+leaves every binary on the old version, and the fence that keeps a new bundle
+off a binary lacking its native module never moves. Android's `versionCode` is
+bumped alongside it, so a device will accept the newer APK over the one it has.
+
 Nothing leaves the session until the user publishes. A preview session holds an
 open checkout and a Metro dev server per app, so the first turn costs a few
 seconds to boot and every turn after it fast-refreshes in place. Sessions are
@@ -102,9 +118,14 @@ origins keep one customer's previewed code from reading another's.
 | Chat | `POST /v1/apps/:id/chat` — streams the turn, ends in a preview |
 | Publish | `POST /v1/apps/:id/publish` — the only call that ships |
 | Reject | `DELETE /v1/apps/:id/preview` — back to the last published state |
+| Undo a release | `POST /v1/apps/:id/rollback` — republish the previous update |
+| History | `GET /v1/apps/:id/releases` — what shipped, newest first |
+| Health | `GET /v1/apps/:id/health` — is the newest release crashing, can it be undone, and where is the installable build |
+| Promote | `POST /v1/apps/:id/promote` — pooled backend to a Firebase project of its own, with or without its data |
+| Submit | `POST /v1/apps/:id/submit` — app bundle to Play's internal testing track |
 | Preview state | `GET /v1/apps/:id/preview` — URL and what is pending |
 | One app, no chat | `POST /v1/apps/:id/update` — preview and publish in one, for scripts |
-| Every app | `POST /v1/fleet/update` with `{"instruction": "...", "dryRun": true}` first |
+| Every app | `POST /v1/fleet/update` with `{"instruction": "...", "dryRun": true}` first, or the console's Fleet page |
 
 The fleet route is how a blueprint fix or dependency bump reaches apps that
 already exist — the template only shapes apps created *after* it changed, so
@@ -121,64 +142,144 @@ versions for nothing — invalidating every installed build's OTA channel.
 
 ## Running it
 
+### 1. Install
+
+Node 22+ and pnpm. Every package runs TypeScript directly under
+`--experimental-strip-types`, so there is no build step.
+
 ```bash
 pnpm install
 pnpm typecheck
 pnpm test
 ```
 
-Both run in CI (`.github/workflows/ci.yml`) on every push to `master` and every
-pull request. On green `master`, CD (`.github/workflows/cd.yml`) deploys the
-control plane and the console to Cloud Run, images tagged by commit so a
-rollback names an exact one. **[`docs/DEPLOY.md`](docs/DEPLOY.md)** is the
-operator's checklist — every credential, in the order you need it.
+Both run in CI on every push and pull request.
+
+### 1b. Configure, one stage at a time
 
 ```bash
-pnpm --filter @von/api dev      # control plane on :8787
-pnpm --filter @von/admin dev    # admin console on :3000
-pnpm --filter @von/chat  dev    # Expo chat app
+pnpm configure           # walk the stages
+pnpm configure --check   # what is set, and whether the providers accept it
+pnpm configure --stage 2 # just one
 ```
 
-**The fastest way to see it work** is `docs/DEPLOY.md` §0: with an Anthropic key
-and a GitHub token, create an app that *adopts* an existing repository
-(`POST /v1/apps` with `repoFullName`) and drive chat → preview → publish against
-it. That skips provisioning entirely — no billing account, no Expo org, no DNS —
-because the loop only needs a repo it can clone and push to.
+Four stages, each usable on its own — the product loop, provisioning,
+deployment, optional capabilities — and each one ends by **checking with the
+provider** rather than declaring success. Stopping after any of them is then a
+decision rather than an accident, which reading a flat list of twenty variables
+never allows.
 
-The control plane runs with an in-memory store, with authentication off, and
-says so on startup. Setting `VON_FIRESTORE_PROJECT` or `VON_PREVIEW_HOST` puts
-it in deployment mode, where a missing `VON_API_KEYS` is a startup error rather
-than an open door.
+Blank keeps what is already there, so re-running after fixing one value does not
+mean retyping the rest. Secrets are shown masked. Nothing it does creates a
+cloud resource — every check is read-only — so it is safe to run repeatedly, and
+Ctrl+C saves what you had entered rather than losing it. Values land in `.env`;
+load them with `set -a && . ./.env && set +a`.
 
-`GET /v1/readiness` reports which capabilities are configured and what each gap
-blocks — credentials arrive in stages, and the alternative is finding out from a
-stack trace in a background task.
+### 2. Start the control plane
 
-### Credentials for real provisioning
+```bash
+pnpm --filter @von/api dev      # :8787
+```
 
-All platform-owned. Users supply none of these — that is the point.
+It starts with **no credentials at all** — in-memory storage, authentication
+off — and prints exactly what it can and cannot do:
 
-See [`docs/DEPLOY.md`](docs/DEPLOY.md) for how each one is created and which
-are Secret Manager entries versus repository variables.
+```
+[readiness] MISS agent     Editing an app from a chat message
+[readiness] MISS github    Creating an app's repository and dispatching releases
+[readiness] agent: ANTHROPIC_API_KEY unset — without it, editing an app from a
+                   chat message is unavailable
+```
 
-| Variable | What it is |
-|---|---|
-| `VON_API_KEYS` | Comma-separated keys that may call the control plane. Required once deployed |
-| `VON_FIRESTORE_PROJECT` / `VON_FIRESTORE_DATABASE` | Where the app list and resource ledger live |
-| `VON_PUBLIC_URL` | Public address of the control plane, baked into every generated app |
-| `ANTHROPIC_API_KEY` | Powers the build agent |
-| `GOOGLE_ACCESS_TOKEN` | Provisioner service account (ADC in production) |
-| `GCP_PARENT` | Folder/org new projects are created under, e.g. `folders/123` |
-| `GCP_BILLING_ACCOUNT` | Billing account to attach — Blaze is required for Functions |
-| `VON_POOLS` | Pool registry: `[{projectId, used, capacity, accepting}]` |
-| `VON_POOL_WEB_CONFIGS` | Firebase web config per pool project, keyed by project id |
-| `GITHUB_INSTALLATION_TOKEN` | Von GitHub App installation token |
-| `VON_GITHUB_ORG` | Org that owns generated repos |
-| `VON_TEMPLATE_REPO` | `owner/repo` of the blueprint, marked as a template |
-| `EXPO_TOKEN` / `EXPO_ACCOUNT_ID` / `EXPO_ACCOUNT_NAME` | Platform's Expo org |
-| `GEMINI_API_KEY` | Handed to generated apps' Cloud Functions |
-| `VON_PREVIEW_HOST` | Wildcard preview host, e.g. `preview.von.app`; without it previews are loopback-only |
-| `VON_SHELL_EAS_PROJECT_ID` | *Optional.* Only needed if an app asks for shell delivery |
+`GET /v1/readiness` returns the same thing as JSON, at any time.
+
+Readiness only checks that a variable is *set*. `GET /v1/preflight` checks that
+each credential is one the provider actually accepts — a whoami, a list, a token
+exchange, all read-only, nothing created. It is the half that matters the day
+credentials are added, because a token pasted with a trailing newline or
+belonging to the wrong Expo account passes readiness and fails three steps into
+a background provisioning run:
+
+```bash
+curl -s localhost:8787/v1/preflight | jq
+```
+
+It reports what each credential *proved*, not just that it worked — the GitHub
+login, the Google identity, the Expo account name — because a credential that
+authenticates perfectly and belongs to the wrong account is the failure no
+boolean can show you. Skipped is not failed: a deployment that has deliberately
+not configured Play is not broken.
+
+### 3. Drive the loop with two tokens
+
+This is the fastest way to see the product work, and it needs no billing
+account, no Expo organisation and no DNS:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export GITHUB_INSTALLATION_TOKEN=ghs_...
+pnpm --filter @von/api dev
+```
+
+Create an app that **adopts** a repository you already have — a clone of
+`templates/app-blueprint`, or any Expo app with its code under `apps/expo`:
+
+```bash
+APP=$(curl -s -X POST localhost:8787/v1/apps \
+  -H 'content-type: application/json' \
+  -d '{"name":"Trail Notes","repoFullName":"your-org/your-expo-app"}' \
+  | jq -r .id)
+```
+
+Then: describe a change, look at it, ship it or throw it away.
+
+```bash
+# 1. The agent edits a working tree. Nothing is committed, nothing ships.
+curl -s -X POST "localhost:8787/v1/apps/$APP/chat" \
+  -H 'content-type: application/json' \
+  -d '{"message":"add a settings screen with a dark mode toggle"}'
+
+# 2. The response carries a preview URL — the app running from that tree.
+curl -s "localhost:8787/v1/apps/$APP/preview" | jq
+
+# 3a. Not right? Back to the last published state.
+curl -s -X DELETE "localhost:8787/v1/apps/$APP/preview"
+
+# 3b. Right? This is the only call that commits, pushes and releases.
+curl -s -X POST "localhost:8787/v1/apps/$APP/publish" | jq
+
+# 4. What has shipped, and undo if it was wrong.
+curl -s "localhost:8787/v1/apps/$APP/releases" | jq
+curl -s -X POST "localhost:8787/v1/apps/$APP/rollback" | jq
+```
+
+The first turn takes a minute or so — the session clones the repo and installs
+its dependencies before Metro starts. Every turn after that fast-refreshes.
+
+> Publishing dispatches the *target repository's* own workflows, so with only
+> these two tokens the release fails inside that repo's Actions unless it has
+> `eas-update.yml` and an `EXPO_TOKEN`. Everything up to and including the
+> commit and push is real.
+
+### 4. The other two apps
+
+```bash
+pnpm --filter @von/admin dev    # console on :3000
+pnpm --filter @von/chat  dev    # Expo chat client
+```
+
+The console reads `VON_API_URL` and `VON_API_KEY`. The chat client reads
+`EXPO_PUBLIC_VON_API_URL` and `EXPO_PUBLIC_VON_API_KEY`; both are optional while
+the control plane is running open.
+
+### 5. Everything else
+
+`VON_FIRESTORE_PROJECT` or `VON_PREVIEW_HOST` puts the control plane in
+**deployment mode**, where a missing `VON_API_KEYS` is a startup error rather
+than an open door. Full provisioning — creating an app's backend, repository and
+EAS project from nothing — needs the credentials in
+**[`docs/DEPLOY.md`](docs/DEPLOY.md)**, which is the operator's checklist in the
+order you need it.
 
 ---
 
@@ -191,7 +292,7 @@ Built and tested:
   GitHub (template repo, sealed Actions secrets, workflow dispatch) and EAS
   (project, channel) drivers
 - the genesis plan — DEPLOY.md translated step-for-step into code
-- OTA-vs-native classifier and blueprint token guard (176 tests overall)
+- OTA-vs-native classifier and blueprint token guard (262 tests overall; the two UIs are typechecked and built, not unit-tested)
 - streaming build agent with a scoped file-edit tool surface
 - preview-then-publish: live web preview of the uncommitted tree, explicit
   publish, one-gesture discard
@@ -201,11 +302,34 @@ Built and tested:
   a real conditional write
 - API-key gate that refuses to run open once deployed
 - adopt-an-existing-repo, so the product loop runs on two tokens
+- release history and one-call rollback — republishes the previous bundle, and
+  refuses when there is no honest OTA path back
+- generated apps report their release outcome back, so a release records the EAS
+  update group a rollback needs
+- generated apps report a failed launch, attributed to the release the device is
+  actually running — advisory only, never an automatic undo
+- both UIs surface it: the console lists every release with its crash count and
+  a rollback button, and the chat app interrupts with one when devices start
+  failing to open
+- a native build path — an installable Android APK, dispatched for the first
+  release of every app and for every later change to dependencies or app config,
+  with the install link surfaced in both UIs
+- Play internal-track submission — an app bundle, its version code bumped in the
+  repo so Play never sees a duplicate, refusing before it spends a build if the
+  deployment has no Play credential
+- pooled -> dedicated promotion — a Firebase project of its own, picked up on the
+  app's next launch with no rebuild, with the app's Firestore data copied across
+- a Fleet page: preview which apps an instruction would touch, then apply
 - `GET /v1/readiness` — every capability, and what each missing variable blocks
+- `GET /v1/preflight` — whether each credential is one its provider accepts,
+  read-only, plus a `.env.example` staged by what unlocks what
 - CI on every push and pull request; CD of both services to Cloud Run on
   green `master`, with a rollback path
 - control plane, admin console, Expo chat client
 - pool allocator — sticky per app, never overfills, warns before capacity runs out
+- Google credentials that survive the hour — service-account key, Cloud Run
+  metadata server, or a static token for a quick local try, cached and refreshed
+  ahead of expiry
 
 Not built yet:
 
@@ -219,10 +343,18 @@ Not built yet:
 - **Per-user identity.** The API-key gate authorises *callers*, not *tenants*;
   `tenantId` still comes from the request. A real multi-tenant boundary needs
   signed user tokens.
-- **Post-update checks** — watching for a crash spike on a new runtime and
-  offering a rollback (EAS Update does this by republishing the prior bundle).
-- pooled -> dedicated data migration
-- store submission (TestFlight / Play internal)
+- **Zero-loss migration.** Promotion copies Firestore data via managed
+  export/import, but an export is a live snapshot: writes during the cutover can
+  be lost. Freezing writes for the window is the missing piece, so today this
+  suits apps with light or paused traffic.
+- **iOS builds.** Android is self-signed and installs from a link. iOS cannot
+  be: it needs an Apple developer account, and EAS wants it interactively at
+  least once, so it is not something the platform can do unattended on a user's
+  behalf yet. TestFlight submission waits on the same thing.
+- **The Play listing itself.** Submission is automated; creating the app in the
+  Play Console and uploading its first bundle by hand is not, because Play
+  refuses API uploads to an app it has never seen. The workflow says so and
+  fails before spending a build rather than after.
 
 ### Relationship to ByteLearning
 

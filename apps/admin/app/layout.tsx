@@ -15,8 +15,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <Link href="/" className="brand">
             von
           </Link>
-          <nav>
+          {/* Gapped rather than relying on JSX whitespace, which collapses
+              between elements and renders the two links as one word. */}
+          <nav style={{ display: "flex", gap: 16 }}>
             <Link href="/apps">Apps</Link>
+            <Link href="/fleet">Fleet</Link>
           </nav>
         </header>
         <main>{children}</main>

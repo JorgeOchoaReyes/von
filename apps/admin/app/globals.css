@@ -132,3 +132,67 @@ code {
   padding: 28px;
   text-align: center;
 }
+
+/* Release health: the one thing on this page that is an alarm, so it is the one
+   thing allowed to shout. */
+.health {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.health.suspect {
+  border-color: var(--err);
+  background: color-mix(in srgb, var(--err) 8%, var(--panel));
+}
+
+button.danger {
+  background: var(--err);
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.danger:hover {
+  filter: brightness(1.08);
+}
+
+.pill.succeeded { border-color: var(--ok); color: var(--ok); }
+.pill.failed,
+.pill.canceled { border-color: var(--err); color: var(--err); }
+.pill.queued,
+.pill.running { border-color: var(--warn); color: var(--warn); }
+
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary:hover {
+  filter: brightness(1.08);
+}
+
+textarea {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: inherit;
+  resize: vertical;
+}
+
+.pill.fulfilled { border-color: var(--ok); color: var(--ok); }
+.pill.rejected { border-color: var(--err); color: var(--err); }

@@ -16,16 +16,34 @@ import type { MiddlewareHandler } from "hono";
  * boundary needs signed user tokens, and that is a larger change than this
  * file should pretend to make.
  *
- * Two exceptions are unauthenticated on purpose:
+ * Four paths are exempt from the platform key, each for its own reason:
  *
  *   - `/healthz`, because a load balancer cannot hold a secret.
  *   - `/v1/apps/:id/runtime-config`, which is documented as public: it returns a
  *     Firebase *web* config, the same values that ship inside every client
  *     binary. Access control for that data lives in Firestore rules and the
  *     GCIP tenant, not in the secrecy of these strings.
+ *   - `/v1/apps/:id/releases/:id/complete`, which a generated app's CI calls to
+ *     report a release outcome. It is not open — it authenticates with that
+ *     app's own release token, which is the point: a repository holding the
+ *     platform key could act on every other customer's app.
+ *   - `/v1/apps/:id/crash`, which installed apps post to when they fail to
+ *     launch. This one *is* open, because a client app has no secret to hold.
+ *     It only increments an advisory counter; nothing acts on it unattended.
  */
 
-const PUBLIC_PATHS = [/^\/healthz$/, /^\/v1\/apps\/[^/]+\/runtime-config$/];
+const PUBLIC_PATHS = [
+  /^\/healthz$/,
+  /^\/v1\/apps\/[^/]+\/runtime-config$/,
+  // Exempt from the *platform* key, not unauthenticated: it carries the app's
+  // own release token, which the handler checks. A generated repository cannot
+  // hold VON_API_KEYS — that key can act on every app.
+  /^\/v1\/apps\/[^/]+\/releases\/[^/]+\/complete$/,
+  // Installed apps reporting a failed launch. Genuinely unauthenticated — a
+  // client holds no secret — which is exactly why the count it feeds is
+  // advisory and never triggers an automatic rollback.
+  /^\/v1\/apps\/[^/]+\/crash$/,
+];
 
 /** Constant-time compare, so a wrong key cannot be found byte by byte. */
 function matches(given: string, expected: string): boolean {

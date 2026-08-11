@@ -20,6 +20,13 @@ export const newTenantId = () => `tnt_${shortId(12)}`;
 export const newAppId = () => `app_${shortId(12)}`;
 export const newBuildId = () => `bld_${shortId(12)}`;
 export const newRunId = () => `run_${shortId(16)}`;
+export const newReleaseId = () => `rel_${shortId(12)}`;
+
+/**
+ * A secret, not an identifier: 160 bits from the same alphabet, long enough
+ * that it is not worth guessing and short enough to paste.
+ */
+export const newReleaseToken = () => shortId(32);
 
 /**
  * A DNS/Firebase-safe slug. Firebase project ids must be 6-30 chars, lowercase

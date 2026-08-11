@@ -6,6 +6,8 @@ import {
   discardPreview,
   previewChange,
   publishChange,
+  rollbackApp,
+  submitApp,
   updateApp,
   type Sessions,
 } from "./update.ts";
@@ -37,7 +39,7 @@ export function updateRoutes(
     if (!instruction) return c.json({ error: "instruction is required" }, 400);
 
     try {
-      return c.json(await previewChange(sessions, target, { instruction }));
+      return c.json(await previewChange(store, sessions, target, { instruction }));
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }
@@ -76,6 +78,62 @@ export function updateRoutes(
 
     try {
       return c.json(await publishChange(store, sessions, target, github()));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  /** What has shipped, newest first. */
+  app.get("/v1/apps/:id/releases", async (c) => {
+    const target = await store.getApp(c.req.param("id"));
+    if (!target) return c.json({ error: "not found" }, 404);
+    return c.json(await store.listReleases(target.id));
+  });
+
+  /**
+   * Undo the last release by republishing the one before it.
+   *
+   * An OTA reaches installed devices in about a minute with no review step, so
+   * this is the recovery path for a bundle that crashes on launch — for a user
+   * whose app no longer opens, "describe a fix" is not one.
+   */
+  app.post("/v1/apps/:id/rollback", async (c) => {
+    const target = await store.getApp(c.req.param("id"));
+    if (!target) return c.json({ error: "not found" }, 404);
+
+    try {
+      const result = await rollbackApp(store, target, github());
+      return c.json({
+        appId: target.id,
+        rolledBack: result.from.id,
+        restored: result.to.id,
+        summary: `Restored the update from ${new Date(result.to.createdAt).toISOString()}`,
+      });
+    } catch (err) {
+      // A refusal here is a statement about the app's history — the last
+      // release was native, or there is nothing earlier to go back to — so it
+      // is a 409, not a 500.
+      const status = (err as Error).name === "NotRollbackableError" ? 409 : 500;
+      return c.json({ error: (err as Error).message }, status);
+    }
+  });
+
+  /**
+   * Put the app on Play's internal testing track.
+   *
+   * Deliberately its own call rather than a flag on publish. Publishing is
+   * routine and happens many times a day; submitting is a decision about who
+   * gets to see the app, costs a build of its own, and depends on a Play
+   * listing that a human had to create. Folding it into publish would make
+   * every ordinary change ten minutes slower and occasionally push something to
+   * testers nobody meant to show them.
+   */
+  app.post("/v1/apps/:id/submit", async (c) => {
+    const target = await store.getApp(c.req.param("id"));
+    if (!target) return c.json({ error: "not found" }, 404);
+
+    try {
+      return c.json(await submitApp(store, target, github()));
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }

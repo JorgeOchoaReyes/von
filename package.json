@@ -7,12 +7,15 @@
     "dev": "turbo run dev",
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
-    "test": "turbo run test"
+    "test": "turbo run test",
+    "configure": "pnpm --filter @von/api configure"
   },
   "devDependencies": {
     "turbo": "^2.3.3",
     "typescript": "^5.7.2",
     "@types/node": "^22.10.2"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  }
 }

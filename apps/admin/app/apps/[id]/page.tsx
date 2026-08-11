@@ -1,5 +1,8 @@
 import { notFound } from "next/navigation";
-import { getApp, getResources } from "@/lib/api";
+import { getApp, getHealth, getResources, listReleases } from "@/lib/api";
+import { PromotePanel } from "./promote";
+import { RollbackPanel } from "./rollback";
+import { SubmitPanel } from "./submit";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +12,19 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
   const app = await getApp(id).catch(() => null);
   if (!app) notFound();
 
-  const resources = await getResources(id).catch(() => []);
+  // Fetched together: an operator looking at an app during an incident wants
+  // the whole picture in one render, not three spinners.
+  const [resources, releases, health] = await Promise.all([
+    getResources(id).catch(() => []),
+    listReleases(id).catch(() => []),
+    getHealth(id).catch(() => null),
+  ]);
+
+  // Taken from the health response rather than recomputed here. The rule has
+  // two exclusions that are easy to miss — a failed build still reports an
+  // artifact, and a store submission's artifact is an app bundle no phone will
+  // open — and a second implementation of it drifts.
+  const installable = health?.install ?? null;
 
   return (
     <>
@@ -39,7 +54,17 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
             </tr>
             <tr>
               <th>EAS project</th>
-              <td>{app.easProjectId ?? <span className="pill">shell delivery</span>}</td>
+              <td>
+                {app.easProjectId ?? (
+                  // Read off the app's delivery mode rather than assumed. An
+                  // adopted repo has no EAS project and is not shell delivery;
+                  // labelling it so sent an operator looking for a shell binary
+                  // that does not exist.
+                  <span className="pill">
+                    {app.deliveryMode === "shell" ? "shell delivery" : "not created"}
+                  </span>
+                )}
+              </td>
             </tr>
             <tr>
               <th>Update channel</th>
@@ -57,6 +82,93 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
           </tbody>
         </table>
       </div>
+
+      <h2 style={{ fontSize: 17, marginTop: 32 }}>Backend</h2>
+      <PromotePanel appId={id} tier={app.backendTier} />
+
+      <h2 style={{ fontSize: 17, marginTop: 32 }}>Releases</h2>
+      <p className="sub">
+        Every publish, newest first. An update reaches installed devices in about a
+        minute with no review step, so this is the record that makes undo possible.
+      </p>
+
+      <div className="card">
+        <strong>Install on a device</strong>
+        <br />
+        {installable ? (
+          <>
+            <a href={installable.url}>Download the APK</a>{" "}
+            <span className="sub">
+              built {new Date(installable.createdAt).toLocaleString()} · runtime{" "}
+              {installable.runtimeVersion}
+            </span>
+            <p className="sub">
+              Self-signed and internally distributed, so Android will ask for
+              permission to install from an unknown source. Updates after this one
+              arrive over the air on the same runtime version — no reinstall.
+            </p>
+          </>
+        ) : (
+          <p className="sub">
+            No installable build yet. An APK is produced by a native release —
+            the first publish, and any later change to dependencies or app config.
+            Purely JavaScript changes ship over the air to a build that already
+            exists.
+          </p>
+        )}
+      </div>
+
+      <SubmitPanel appId={id} submitting={health?.submitting ?? false} />
+
+      {health ? <RollbackPanel appId={id} health={health} /> : null}
+
+      {releases.length === 0 ? (
+        <div className="empty">Nothing published yet.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Change</th>
+              <th>Kind</th>
+              <th>Status</th>
+              <th>Crashes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {releases.map((r) => (
+              <tr key={r.id}>
+                <td title={r.id}>{new Date(r.createdAt).toLocaleString()}</td>
+                <td>
+                  {r.isRollback ? <span className="pill">rollback</span> : null}{" "}
+                  {r.instruction || <span className="sub">—</span>}
+                  {r.rolledBackBy ? (
+                    <>
+                      <br />
+                      <span className="sub">undone by {r.rolledBackBy}</span>
+                    </>
+                  ) : null}
+                </td>
+                <td>
+                  <span className="pill">{r.kind}</span>
+                  <br />
+                  <span className="sub">rt {r.runtimeVersion}</span>
+                </td>
+                <td>
+                  <span className={`pill ${r.status}`}>{r.status}</span>
+                  {r.artifactUrl && r.kind !== "store" ? (
+                    <>
+                      <br />
+                      <a href={r.artifactUrl}>APK</a>
+                    </>
+                  ) : null}
+                </td>
+                <td>{r.crashReports > 0 ? r.crashReports : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
       <h2 style={{ fontSize: 17, marginTop: 32 }}>Provisioned resources</h2>
       <p className="sub">

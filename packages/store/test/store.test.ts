@@ -157,3 +157,91 @@ test("an app created without a repository has none until genesis writes one", as
   const app = await store.createApp({ tenantId: "t", name: "Fresh", description: "" });
   assert.equal(app.repoFullName, null);
 });
+
+test("releases are recorded and read back newest first", async () => {
+  const { store } = make();
+  const base = {
+    appId: "app_1",
+    kind: "ota" as const,
+    reason: "JS only",
+    channel: "app-1",
+    runtimeVersion: "1.0.0",
+    status: "succeeded" as const,
+    externalId: "group_1",
+    artifactUrl: null,
+    commitSha: "abc",
+    instruction: "add a screen",
+    rolledBackBy: null,
+    isRollback: false,
+    crashReports: 0,
+  };
+
+  await store.recordRelease({ ...base, id: "rel_1", createdAt: 1 });
+  await store.recordRelease({ ...base, id: "rel_2", createdAt: 2 });
+  await store.recordRelease({ ...base, id: "rel_other", appId: "app_2", createdAt: 3 });
+
+  // "What shipped last?" is the question rollback asks, so ordering is the
+  // point of this collection rather than an incidental convenience.
+  const mine = await store.listReleases("app_1");
+  assert.deepEqual(mine.map((r) => r.id), ["rel_2", "rel_1"]);
+});
+
+test("marking a release rolled back survives the round trip", async () => {
+  const { store } = make();
+  await store.recordRelease({
+    id: "rel_bad",
+    appId: "app_1",
+    kind: "ota",
+    reason: "JS only",
+    channel: "app-1",
+    runtimeVersion: "1.0.0",
+    status: "succeeded",
+    externalId: "group_1",
+    artifactUrl: null,
+    commitSha: "abc",
+    instruction: "the bad one",
+    rolledBackBy: null,
+    isRollback: false,
+    crashReports: 0,
+    createdAt: 1,
+  });
+
+  await store.updateRelease("rel_bad", { rolledBackBy: "rel_undo" });
+
+  // Marked, not deleted: the record of a bad ship is the useful part, and it is
+  // what stops the next rollback picking the bundle just rejected.
+  const [read] = await store.listReleases("app_1");
+  assert.equal(read!.rolledBackBy, "rel_undo");
+});
+
+test("updating a release that does not exist fails loudly", async () => {
+  const { store } = make();
+  await assert.rejects(store.updateRelease("rel_nope", { status: "failed" }), /no release/);
+});
+
+test("crash reports accumulate without losing any", async () => {
+  const { store } = make();
+  await store.recordRelease({
+    id: "rel_1",
+    appId: "app_1",
+    kind: "ota",
+    reason: "JS only",
+    channel: "app-1",
+    runtimeVersion: "1.0.0",
+    status: "succeeded",
+    externalId: "group_1",
+    artifactUrl: null,
+    commitSha: "abc",
+    instruction: "add a screen",
+    rolledBackBy: null,
+    isRollback: false,
+    crashReports: 0,
+    createdAt: 1,
+  });
+
+  // Every affected device reports at roughly the same moment — that
+  // simultaneity *is* the signal, so a read-modify-write would swallow it.
+  await Promise.all(Array.from({ length: 25 }, () => store.incrementCrashReports("rel_1")));
+
+  assert.equal((await store.listReleases("app_1"))[0]!.crashReports, 25);
+});

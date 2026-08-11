@@ -71,6 +71,14 @@ export const App = z.object({
   channel: z.string().default("preview"),
   /** Bumped whenever a native-affecting change ships; gates OTA delivery. */
   runtimeVersion: z.string().default("1.0.0"),
+  /**
+   * Per-app secret the app's own CI presents when reporting a release outcome.
+   *
+   * Scoped to one app on purpose. The alternative — handing every generated
+   * repository the platform's API key — would let any one customer's workflow
+   * act on every other customer's app.
+   */
+  releaseToken: z.string().default(""),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -117,11 +125,28 @@ export const BuildStatus = z.enum([
 ]);
 export type BuildStatus = z.infer<typeof BuildStatus>;
 
-/** A release attempt — either an OTA update or a native binary build. */
+/**
+ * A release attempt — an OTA update, a native binary build, or a store
+ * submission.
+ *
+ * Recorded for every publish, because "go back to the last one that worked" is
+ * only answerable if there is a record of what the last one was. An OTA reaches
+ * installed devices in about a minute with no review step in between, so the
+ * ability to undo it is not a nicety — it is the only thing standing between a
+ * bad bundle and a user whose app no longer opens.
+ */
 export const Release = z.object({
   id: z.string(),
   appId: z.string(),
-  kind: z.enum(["ota", "native"]),
+  /**
+   * `ota` reaches installed builds; `native` produces an installable APK;
+   * `store` builds an app bundle and pushes it to Play's internal track.
+   *
+   * `store` is separate from `native` because the artifact is not the same
+   * thing: an AAB cannot be installed from a link, and offering one as an
+   * install button gives the user a file their phone refuses to open.
+   */
+  kind: z.enum(["ota", "native", "store"]),
   /** Why the router chose this kind — surfaced in the admin UI. */
   reason: z.string(),
   channel: z.string(),
@@ -130,6 +155,26 @@ export const Release = z.object({
   /** EAS build/update id, once known. */
   externalId: z.string().nullable().default(null),
   artifactUrl: z.string().nullable().default(null),
+  /** Commit this release shipped. The anchor for "what changed since". */
+  commitSha: z.string().nullable().default(null),
+  /** What the user asked for, so a release list reads like a history. */
+  instruction: z.string().default(""),
+  /**
+   * Set when this release was undone, naming the release that replaced it.
+   * Kept rather than deleted: the record of a bad ship is the useful part.
+   */
+  rolledBackBy: z.string().nullable().default(null),
+  /** True when this release is itself an undo of an earlier one. */
+  isRollback: z.boolean().default(false),
+  /**
+   * Crash signals reported by installed apps running this release.
+   *
+   * Advisory only. The endpoint that collects them cannot be authenticated — a
+   * client app holds no secret worth the name — so this must never trigger an
+   * automatic rollback. It is here to raise a question with the person who
+   * published the change, not to answer it.
+   */
+  crashReports: z.number().default(0),
   createdAt: z.number(),
 });
 export type Release = z.infer<typeof Release>;

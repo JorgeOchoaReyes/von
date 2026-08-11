@@ -152,6 +152,62 @@ export async function publish(appId: string): Promise<ReleaseInfo> {
   };
 }
 
+/** A build the user can put on their own phone. */
+export interface InstallInfo {
+  url: string;
+  runtimeVersion: string;
+  createdAt: number;
+}
+
+/** Is the live release in trouble, can it be undone, and is there a build to install? */
+export interface HealthInfo {
+  crashReports: number;
+  suspect: boolean;
+  publishedAt: number | null;
+  rollback: { available: boolean; to: string | null; reason: string | null };
+  install: InstallInfo | null;
+  /** A native build is in flight, so `install` predates the change being published. */
+  building: boolean;
+}
+
+export async function getHealth(appId: string): Promise<HealthInfo> {
+  const res = await fetch(`${API_URL}/v1/apps/${appId}/health`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`health failed: ${res.status}`);
+
+  const body = (await res.json()) as {
+    crashReports: number;
+    suspect: boolean;
+    latest: { createdAt: number } | null;
+    rollback: { available: boolean; to: string | null; reason: string | null };
+    install: { url: string; runtimeVersion: string; createdAt: number } | null;
+    building: boolean;
+  };
+
+  return {
+    crashReports: body.crashReports,
+    suspect: body.suspect,
+    publishedAt: body.latest?.createdAt ?? null,
+    rollback: body.rollback,
+    // Defaulted rather than assumed present: the chat app is shipped separately
+    // from the control plane and may be talking to one that predates this field.
+    install: body.install ?? null,
+    building: body.building ?? false,
+  };
+}
+
+/** Undo the last release by republishing the one before it. */
+export async function rollback(appId: string): Promise<string> {
+  const res = await fetch(`${API_URL}/v1/apps/${appId}/rollback`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const body = (await res.json()) as { error?: string; summary?: string };
+  // The control plane's refusals are written for a person — "that was a native
+  // build" — so they are shown rather than reduced to a status code.
+  if (!res.ok) throw new Error(body.error ?? `rollback failed: ${res.status}`);
+  return body.summary ?? "Rolled back.";
+}
+
 /** Throw away an unpublished change and go back to what is live. */
 export async function discardPreview(appId: string): Promise<void> {
   const res = await fetch(`${API_URL}/v1/apps/${appId}/preview`, {

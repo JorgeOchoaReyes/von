@@ -1,0 +1,61 @@
+name: EAS Rollback
+
+# Republishes an earlier update so it becomes the newest on the channel.
+#
+# EAS Update has no un-publish: the only way back is forward. This takes the
+# update *group* of a known-good release and republishes it, which is what makes
+# a bad OTA recoverable in about a minute rather than requiring the user to
+# describe a fix while holding an app that no longer opens.
+#
+# Dispatched by the control plane, never on a push — a rollback is always a
+# deliberate act.
+
+on:
+  workflow_dispatch:
+    inputs:
+      group:
+        description: "Update group id to republish"
+        type: string
+        required: true
+      channel:
+        description: "Channel to republish onto"
+        type: string
+        default: "{{CHANNEL}}"
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # No type-check gate here, deliberately: this republishes a bundle that
+      # already shipped and already passed one. Adding a gate would mean a
+      # rollback could be blocked by a type error introduced *after* the release
+      # being rolled back to — exactly when you need it most.
+      - name: Republish the previous update
+        working-directory: apps/expo
+        run: |
+          eas update:republish \
+            --group "${{ inputs.group }}" \
+            --message "Rollback to ${{ inputs.group }}" \
+            --non-interactive

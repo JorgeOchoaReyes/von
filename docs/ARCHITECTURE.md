@@ -130,6 +130,50 @@ few hundred thousand is not, and this design never asks for it.
 Tier 2 is also the honest answer to "what happens if we leave?" — the generated
 repo is a normal Expo + Firebase monorepo with working CI. It runs without us.
 
+### Promoting Tier 0 -> Tier 1
+
+`POST /v1/apps/:id/promote` flips the tier and re-runs genesis. Because the plan
+is idempotent, that creates exactly what the new tier needs — project, web app,
+`(default)` database, anonymous auth, deploy service account — and reuses the
+repository, EAS project and update channel untouched. The app's runtime config
+is rewritten, and the installed build picks up the new backend on its next
+launch: no rebuild, no reinstall, no store review. That is §4 being cashed in.
+
+Two idempotency keys had to change for this to work at all, and both were
+silent failures rather than errors:
+
+- **Firestore** was keyed on the app id. A promoted app already had a
+  `firebase.firestore:<app>` record from its pooled database, so the ledger
+  would short-circuit — promotion would report success against a project with
+  no database in it. The key now includes the database id, because a named
+  database in a pool and `(default)` in a new project are two resources.
+- **Hydration** was keyed on the app id. It bakes `FIREBASE_PROJECT_ID` into the
+  generated repo's workflows, so a promoted app would have gone on deploying its
+  rules to the pool project it no longer used. The key now includes that project.
+
+**Promotion asks what to do about data, and refuses to guess.** Either
+`migrateData` copies the app's Firestore documents into its new database, or
+`acknowledgeDataReset` accepts leaving them behind. Neither is a default,
+because both are consequential and the right answer depends on whether the app
+has users.
+
+The copy is Firestore's own `exportDocuments` / `importDocuments` through a GCS
+bucket, not a document-by-document rewrite. Reading and rewriting every document
+through the API is O(n) requests, bills a read and a write for each, and takes
+hours on anything real; the managed operations are server-side bulk jobs that
+cost a fraction. The migration is recorded in the resource ledger like any other
+provisioned thing, keyed by both ends of the copy, so re-promoting does not
+re-export gigabytes.
+
+What it is **not** is zero-loss. An export is a live snapshot — Firestore does
+not freeze the database while running one — so documents written after the
+export begins are not in the copy, and once the app switches over those writes
+are stranded. Freezing writes for the cutover window is the missing piece. Until
+it exists this suits apps with light or paused traffic, and asking to migrate
+without a configured bucket is refused rather than quietly downgraded to a
+reset: a caller who asked for their data must not be told "promoted" without
+it.
+
 ---
 
 ## 4. What makes moving between tiers cheap
@@ -302,10 +346,69 @@ stages, not one: the preview (§13) is where the user decides whether the change
 is right, and the OTA is where it becomes real. Only the second one is a
 release.
 
-Still worth building on top: **automated post-update checks** — the agent
-watching for a crash spike or a failed launch on the new runtime and offering a
-rollback, which EAS Update supports natively by republishing the previous bundle
-to the channel.
+### Undo
+
+An OTA reaches every installed device in about a minute with no review step
+between an agent's diff and a user's phone. That speed is the product, and it is
+also why undo has to exist: the recovery path for a bundle that crashes on
+launch cannot be "describe a fix", performed by someone holding an app that no
+longer opens.
+
+Rolling back is a **forward** action. EAS Update has no un-publish, so the fix
+is to publish the previous bundle again and let it become the newest on the
+channel. A rollback is therefore itself a release, recorded like any other, and
+the bad one is marked rather than deleted — the record of what went wrong is the
+useful part, and it is what stops the next rollback from choosing the bundle
+that was just rejected.
+
+Two refusals matter more than the happy path:
+
+- **A native release cannot be undone with an update.** The change lives in the
+  installed binary; republishing an older JS bundle does not remove it, and if
+  the build bumped the runtime version the bundle would not even reach the new
+  binary. That needs another build, and saying so is better than dispatching
+  something that appears to succeed.
+- **A runtime version bump has no OTA path back.** An update only reaches builds
+  whose runtime version matches, so restoring a bundle from before the bump
+  would either target devices that cannot run it or silently reach nobody while
+  reporting success.
+
+### Noticing
+
+Undo is one call, but nobody is watching. An update lands on every installed
+device in about a minute; if it crashes on launch, the person best placed to
+notice is holding an app that will not open. So the app reports for itself: a
+fatal error posts one signal naming the build it was running, and the control
+plane attributes it to the release those devices are actually on — by update
+group when the client knows it, by runtime version otherwise. A signal that
+matches nothing is dropped rather than guessed, because a crash count on a
+bundle that is fine invites undoing it.
+
+`GET /v1/apps/:id/health` answers both halves at once — is this release in
+trouble, and can it be undone — because a UI that asks separately ends up
+showing a button that fails when pressed.
+
+**The counts are advisory and never trigger an automatic rollback.** The
+endpoint cannot be authenticated: a client app holds no secret worth the name,
+since anything in a bundle is readable by whoever has it. So the numbers can be
+inflated by anyone who cares to. They are enough to raise a question with the
+person who published the change, and nowhere near enough to act on unattended.
+
+The report is deliberately thin — that a launch failed, and which build — with
+no stack trace, message or device identifier. Those would be user data flowing
+out of an app whose content the platform did not write, and the count alone
+does the job.
+
+Both UIs surface it. The console lists every release with its crash count and a
+rollback button — a server action, so the API key never leaves the server and the
+page works without JavaScript, which during an incident is the right trade. The
+chat app polls and interrupts with a banner when devices start failing to open.
+
+The wording in both avoids certainty neither has. "N devices failed to open your
+app" is what the data supports; "your release is broken" is not, and the refusal
+text — *that was a native build* — is shown as prominently as the button,
+because during an incident knowing what you cannot do is as useful as the
+button.
 
 ---
 
@@ -340,6 +443,33 @@ essentially verbatim.
 **Added:** a type-check gate in `eas-update.yml` before publishing. In
 ByteLearning a human wrote and reviewed the diff before pushing; here an agent
 wrote it, and OTA reaches devices with no review step in between.
+
+**Also added:** `eas-android-apk.yml`. ByteLearning had no build workflow
+because the two hand-offs it left to a human were deciding OTA-vs-native and
+installing the build — a person ran `eas build` and installed the result. Both
+have to be automatic here, so a native release dispatches this workflow and it
+reports the artifact URL back to the control plane. That URL is the app's only
+route onto a phone: previews are a browser, and updates reach a binary that is
+already there.
+
+It follows that the classifier alone is not enough to route a release. It
+answers "does this change the binary?", which presumes one exists; on an app
+that has never been built the honest answer to *any* change is still "build it".
+So `decideRelease` asks both questions, and escalates an OTA to a build whenever
+no finished binary exists at the app's current runtime version. That covers the
+first release of every app and the subtler case where a native release bumped
+the runtime version and then failed — leaving every subsequent update publishing
+to a channel no installed build is listening on.
+
+The bump is written into `apps/expo/app.json` and committed with the change,
+which is why the decision is made before the commit rather than after it. With
+`policy: "appVersion"` the runtime version *is* `expo.version`; a bump recorded
+only in the control plane's own record would leave every built binary on the old
+version, the fence would never move, and a bundle referencing a new native
+module would land on a binary without it — the exact failure this machinery
+exists to prevent, arriving anyway and looking like an unexplained crash.
+`android.versionCode` is bumped in the same write, since a device will not take
+a newer APK that claims to be the same build.
 
 ---
 

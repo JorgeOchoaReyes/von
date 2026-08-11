@@ -35,6 +35,19 @@ export interface GenesisInput extends Record<string, unknown> {
   geminiApiKey: string;
   /** Expo token the generated repo's workflows use. */
   expoToken: string;
+  /**
+   * The app's own callback token. Written into its repository so its CI can
+   * report a release outcome — and scoped to this app alone, because a
+   * repository holding the platform key could act on every other customer's.
+   */
+  releaseToken: string;
+  /**
+   * The platform's Google Play service account key, shared by every app it
+   * submits. Absent when the deployment has no Play account, in which case the
+   * generated repo simply has no submit credential and its Play workflow
+   * refuses before spending a build.
+   */
+  playServiceAccountKey?: string;
 }
 
 export interface GenesisDeps {
@@ -250,6 +263,12 @@ export function genesisPlan(deps: GenesisDeps): Plan {
           FIREBASE_PROJECT_ID:
             (ctx.outputs.firebaseProject?.projectId as string | undefined) ??
             input(ctx).poolProjectId,
+          // Named, not `(default)`, for a pooled app: its data lives in its own
+          // database inside a shared project, and rules deployed to the default
+          // one would govern nothing it owns while trampling every other pooled
+          // app's rules on the way past.
+          FIRESTORE_DATABASE_ID:
+            (ctx.outputs.firestore?.databaseId as string | undefined) ?? "(default)",
           VON_API_URL: deps.apiUrl,
         },
       }),
@@ -264,7 +283,19 @@ export function genesisPlan(deps: GenesisDeps): Plan {
         const secrets: Record<string, string> = {
           GEMINI_API_KEY: input(ctx).geminiApiKey,
           EXPO_TOKEN: input(ctx).expoToken,
+          // How the app's CI reports what its release did. Without these the
+          // release stays `queued` with no EAS update group, and rollback has
+          // nothing to republish.
+          VON_API_URL: deps.apiUrl,
+          VON_RELEASE_TOKEN: input(ctx).releaseToken,
         };
+        // The platform's own Play developer account, shared by every generated
+        // app it publishes. Optional: a deployment that never submits to Play
+        // does not need one, and an empty secret is refused by the secrets
+        // driver rather than written as a blank the workflow would trust.
+        const play = input(ctx).playServiceAccountKey;
+        if (play) secrets.GOOGLE_PLAY_SERVICE_ACCOUNT = play;
+
         // Only dedicated apps deploy their own functions, so only they need a
         // deploy credential. Pooled apps call the shared project's functions.
         const sa = ctx.outputs.deploySa?.privateKeyJson as string | undefined;

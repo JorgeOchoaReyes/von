@@ -4,7 +4,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { repoHydrateDriver, type RepoCheckout } from "../src/drivers/hydrate.ts";
-import type { BlueprintVars } from "@von/generator";
+import { generateRepo, type BlueprintVars } from "@von/generator";
 
 const BLUEPRINT = fileURLToPath(new URL("../../../templates/app-blueprint", import.meta.url));
 
@@ -47,6 +47,7 @@ const VARS: BlueprintVars = {
   CHANNEL: "app-abcdefghijkl",
   EAS_PROJECT_ID: "eas_proj_1",
   FIREBASE_PROJECT_ID: "von-pool-001",
+  FIRESTORE_DATABASE_ID: "app-abcdefghijkl",
   VON_API_URL: "https://api.von.test",
 };
 
@@ -200,4 +201,25 @@ test("the hydrated blueprint is still valid JSON", async () => {
     if (!path.endsWith(".json")) continue;
     assert.doesNotThrow(() => JSON.parse(contents), `${path} is not valid JSON after rendering`);
   }
+});
+
+test("a pooled app's rules deploy to its own database, not the pool's default", async () => {
+  // The bug: firebase.json named no database, so `firebase deploy --only
+  // firestore:rules` wrote to `(default)` in the shared pool project. Every
+  // pooled app overwrote the same rules file, and none of them had rules
+  // governing the named database their data actually lives in.
+  const blueprint = Object.fromEntries(await loadBlueprint());
+  const files = generateRepo(blueprint, {
+    ...VARS,
+    FIREBASE_PROJECT_ID: "von-pool-001",
+    FIRESTORE_DATABASE_ID: "app-abcdefghijkl",
+  });
+
+  const firebaseJson = files.find((f) => f.path === "firebase.json")!;
+  const config = JSON.parse(firebaseJson.contents) as {
+    firestore: Array<{ database: string; rules: string }>;
+  };
+
+  assert.equal(config.firestore[0]!.database, "app-abcdefghijkl");
+  assert.equal(config.firestore[0]!.rules, "firestore.rules");
 });

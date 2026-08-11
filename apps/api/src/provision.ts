@@ -9,6 +9,10 @@ import {
   type GenesisInput,
   allocatePool,
   type GitHubCtx,
+  cachingAuth,
+  detectTokenSource,
+  NoGoogleCredentials,
+  type GoogleAuth,
   type PlanContext,
   type PoolStore,
 } from "@von/provisioning";
@@ -27,6 +31,43 @@ const need = (name: string): string => {
   return v;
 };
 
+/**
+ * The platform's Google identity, resolved once and shared.
+ *
+ * One instance for the whole process so its token cache is shared: genesis runs
+ * several Google steps concurrently, and a cache per call site would mean a
+ * token exchange per step.
+ *
+ * Detection is async (it may read a key file, or probe the metadata server) but
+ * `GoogleAuth` is not, so the detection promise is created lazily on first use
+ * and awaited inside `accessToken`. That keeps a control plane with no Google
+ * credentials booting normally — provisioning is one capability among several,
+ * and the readiness endpoint is most useful exactly when something is missing.
+ */
+let googleTokens: Promise<GoogleAuth> | null = null;
+
+export function googleAuth(): GoogleAuth {
+  googleTokens ??= detectTokenSource().then((source) => {
+    if (!source) throw new NoGoogleCredentials();
+    console.log(`[google] authenticating as ${source.describe()}`);
+    return cachingAuth(source);
+  });
+
+  return {
+    accessToken: async () => {
+      try {
+        return await (await googleTokens!).accessToken();
+      } catch (err) {
+        // Cleared so a credential added after boot is picked up on the next
+        // attempt rather than needing a restart — and so one failed detection
+        // does not poison every later call with the same rejected promise.
+        googleTokens = null;
+        throw err;
+      }
+    },
+  };
+}
+
 /** GitHub context, shared by provisioning and by the update path. */
 export function githubCtx(): GitHubCtx {
   return {
@@ -39,9 +80,7 @@ export function githubCtx(): GitHubCtx {
 function deps(): GenesisDeps {
   return {
     google: {
-      // Short-lived token from the platform's provisioner service account.
-      // Application Default Credentials in production; a static token locally.
-      auth: { accessToken: async () => need("GOOGLE_ACCESS_TOKEN") },
+      auth: googleAuth(),
       parent: need("GCP_PARENT"),
       billingAccount: need("GCP_BILLING_ACCOUNT"),
       // Web config per pool project. Pools are separate Firebase projects, so
@@ -85,6 +124,16 @@ function deps(): GenesisDeps {
 }
 
 /**
+ * Where a promotion's export is staged, or null when the platform has nowhere
+ * to put it. Optional because a deployment that never promotes needs no bucket.
+ */
+export function migrateCtx(): { auth: GoogleAuth; bucket: string } | null {
+  const bucket = process.env.VON_MIGRATION_BUCKET?.trim();
+  if (!bucket) return null;
+  return { auth: googleAuth(), bucket };
+}
+
+/**
  * Run genesis for a newly created app.
  *
  * Safe to call more than once for the same app: the plan is keyed off the app
@@ -118,6 +167,8 @@ export async function startGenesis(
     deliveryMode: app.deliveryMode,
     geminiApiKey: process.env.GEMINI_API_KEY ?? "",
     expoToken: process.env.EXPO_TOKEN ?? "",
+    releaseToken: app.releaseToken,
+    playServiceAccountKey: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT?.trim() || undefined,
   };
 
   const ctx: PlanContext = { appId: app.id, outputs: {}, input };

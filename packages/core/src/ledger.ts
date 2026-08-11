@@ -16,6 +16,7 @@ export type ResourceKind =
   | "firebase.webapp"
   | "firebase.auth"
   | "firebase.firestore"
+  | "firestore.migration"
   | "firebase.serviceaccount"
   | "gcip.tenant"
   | "github.repo"

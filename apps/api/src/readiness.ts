@@ -49,13 +49,25 @@ function invalidJson(name: string, expect: "array" | "object"): boolean {
   }
 }
 
+/**
+ * A requirement one of several variables can satisfy.
+ *
+ * Google credentials come in three shapes and any one of them works, so
+ * listing all three as required would report a fully working control plane as
+ * broken. Rendered as `A|B|C` in `missing`, which reads as the choice it is.
+ */
+const anyOf = (...names: string[]): string => names.join("|");
+
+const satisfied = (requirement: string): boolean =>
+  requirement.split("|").some((name) => present(name));
+
 function capability(
   id: string,
   unlocks: string,
   required: string[],
   invalid: string[] = [],
 ): Capability {
-  const missing = required.filter((name) => !present(name));
+  const missing = required.filter((name) => !satisfied(name));
   return {
     id,
     unlocks,
@@ -92,7 +104,21 @@ export function checkReadiness(): Readiness {
     capability(
       "google",
       "Provisioning an app's backend — GCIP tenant and Firestore database",
-      ["GOOGLE_ACCESS_TOKEN", "GCP_PARENT", "GCP_BILLING_ACCOUNT", "VON_POOLS", "VON_POOL_WEB_CONFIGS"],
+      [
+        // Any one of these three. On Cloud Run none of them is set and the
+        // metadata server supplies the identity — which cannot be detected
+        // from the environment, so that case reports as missing here and works
+        // anyway. Erring toward a false warning rather than a false all-clear.
+        anyOf(
+          "GOOGLE_SERVICE_ACCOUNT_KEY",
+          "GOOGLE_APPLICATION_CREDENTIALS",
+          "GOOGLE_ACCESS_TOKEN",
+        ),
+        "GCP_PARENT",
+        "GCP_BILLING_ACCOUNT",
+        "VON_POOLS",
+        "VON_POOL_WEB_CONFIGS",
+      ],
       [
         ...(invalidJson("VON_POOLS", "array") ? ["VON_POOLS is not a JSON array"] : []),
         ...(invalidJson("VON_POOL_WEB_CONFIGS", "object")
@@ -113,6 +139,20 @@ export function checkReadiness(): Readiness {
 
     capability("functions", "Handing generated apps a key for their Cloud Functions", [
       "GEMINI_API_KEY",
+    ]),
+
+    // Everything else about Android works without this; only the Play track
+    // does not. Named separately so "I cannot install it from a link" and "I
+    // cannot get it to testers through Play" are distinguishable gaps.
+    capability("play", "Submitting an app to Google Play's internal track", [
+      "GOOGLE_PLAY_SERVICE_ACCOUNT",
+    ]),
+
+    // Promotion works without it — the caller has to accept a data reset —
+    // but "your documents can come with you" is off the table until a bucket
+    // exists, and discovering that mid-promotion is the wrong time.
+    capability("migration", "Copying an app's Firestore data when it is promoted", [
+      "VON_MIGRATION_BUCKET",
     ]),
   ];
 

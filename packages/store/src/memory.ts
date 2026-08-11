@@ -1,4 +1,10 @@
-import { InMemoryLedger, type App, type ResourceLedger, type RuntimeConfig } from "@von/core";
+import {
+  InMemoryLedger,
+  type App,
+  type Release,
+  type ResourceLedger,
+  type RuntimeConfig,
+} from "@von/core";
 import { newApp, type NewAppInput, type Store } from "./store.ts";
 
 /**
@@ -13,6 +19,7 @@ export class InMemoryStore implements Store {
   readonly ledger: ResourceLedger = new InMemoryLedger();
   private readonly apps = new Map<string, App>();
   private readonly configs = new Map<string, RuntimeConfig>();
+  private readonly releases = new Map<string, Release>();
 
   async createApp(input: NewAppInput): Promise<App> {
     const app = newApp(input);
@@ -43,5 +50,32 @@ export class InMemoryStore implements Store {
 
   async getRuntimeConfig(appId: string): Promise<RuntimeConfig | null> {
     return this.configs.get(appId) ?? null;
+  }
+
+  async recordRelease(release: Release): Promise<void> {
+    this.releases.set(release.id, release);
+  }
+
+  async listReleases(appId: string, limit = 50): Promise<Release[]> {
+    return [...this.releases.values()]
+      .filter((r) => r.appId === appId)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit);
+  }
+
+  async updateRelease(id: string, patch: Partial<Release>): Promise<Release> {
+    const existing = this.releases.get(id);
+    if (!existing) throw new Error(`no release ${id}`);
+    const next = { ...existing, ...patch };
+    this.releases.set(id, next);
+    return next;
+  }
+
+  async incrementCrashReports(id: string): Promise<Release> {
+    const existing = this.releases.get(id);
+    if (!existing) throw new Error(`no release ${id}`);
+    const next = { ...existing, crashReports: existing.crashReports + 1 };
+    this.releases.set(id, next);
+    return next;
   }
 }
