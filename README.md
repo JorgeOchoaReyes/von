@@ -155,6 +155,26 @@ pnpm test
 
 Both run in CI on every push and pull request.
 
+### 1b. Configure, one stage at a time
+
+```bash
+pnpm configure           # walk the stages
+pnpm configure --check   # what is set, and whether the providers accept it
+pnpm configure --stage 2 # just one
+```
+
+Four stages, each usable on its own — the product loop, provisioning,
+deployment, optional capabilities — and each one ends by **checking with the
+provider** rather than declaring success. Stopping after any of them is then a
+decision rather than an accident, which reading a flat list of twenty variables
+never allows.
+
+Blank keeps what is already there, so re-running after fixing one value does not
+mean retyping the rest. Secrets are shown masked. Nothing it does creates a
+cloud resource — every check is read-only — so it is safe to run repeatedly, and
+Ctrl+C saves what you had entered rather than losing it. Values land in `.env`;
+load them with `set -a && . ./.env && set +a`.
+
 ### 2. Start the control plane
 
 ```bash
