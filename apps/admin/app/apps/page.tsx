@@ -23,6 +23,7 @@ export default async function AppsPage() {
     <>
       <h1>Apps</h1>
       <p className="sub">{apps.length} total</p>
+      <div className="scroll">
       <table>
         <thead>
           <tr>
@@ -57,6 +58,7 @@ export default async function AppsPage() {
           ))}
         </tbody>
       </table>
+      </div>
     </>
   );
 }

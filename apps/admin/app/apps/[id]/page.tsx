@@ -125,6 +125,7 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
       {releases.length === 0 ? (
         <div className="empty">Nothing published yet.</div>
       ) : (
+        <div className="scroll">
         <table>
           <thead>
             <tr>
@@ -141,7 +142,9 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
                 <td title={r.id}>{new Date(r.createdAt).toLocaleString()}</td>
                 <td>
                   {r.isRollback ? <span className="pill">rollback</span> : null}{" "}
-                  {r.instruction || <span className="sub">—</span>}
+                  <span className="clamp">
+                    {r.instruction || <span className="sub">—</span>}
+                  </span>
                   {r.rolledBackBy ? (
                     <>
                       <br />
@@ -168,6 +171,7 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
             ))}
           </tbody>
         </table>
+        </div>
       )}
 
       <h2 style={{ fontSize: 17, marginTop: 32 }}>Provisioned resources</h2>
@@ -179,6 +183,7 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
       {resources.length === 0 ? (
         <div className="empty">No resources recorded yet.</div>
       ) : (
+        <div className="scroll">
         <table>
           <thead>
             <tr>
@@ -199,7 +204,7 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
                   {r.error ? (
                     <>
                       <br />
-                      <code>{r.error}</code>
+                      <code className="clamp">{r.error}</code>
                     </>
                   ) : null}
                 </td>
@@ -211,6 +216,7 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </>
   );
