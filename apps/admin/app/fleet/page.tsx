@@ -75,26 +75,28 @@ export default async function Fleet({
             </p>
           ) : null}
 
-          <table>
-            <thead>
-              <tr>
-                <th>App</th>
-                <th>Repository</th>
-              </tr>
-            </thead>
-            <tbody>
-              {plan.wouldUpdate.map((a) => (
-                <tr key={a.id}>
-                  <td>
-                    <a href={`/apps/${a.id}`}>{a.name}</a>
-                  </td>
-                  <td>
-                    <code>{a.repo ?? "—"}</code>
-                  </td>
+          <div className="scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>App</th>
+                  <th>Repository</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {plan.wouldUpdate.map((a) => (
+                  <tr key={a.id}>
+                    <td>
+                      <a href={`/apps/${a.id}`}>{a.name}</a>
+                    </td>
+                    <td>
+                      <code>{a.repo ?? "—"}</code>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
           {plan.wouldUpdate.length > 0 ? (
             <form method="GET" style={{ marginTop: 16 }}>
@@ -122,6 +124,7 @@ export default async function Fleet({
             {summary.total}.
           </p>
           {summary.results?.length ? (
+            <div className="scroll">
             <table>
               <thead>
                 <tr>
@@ -142,7 +145,7 @@ export default async function Fleet({
                       {r.error ? (
                         <>
                           <br />
-                          <code>{r.error}</code>
+                          <code className="clamp">{r.error}</code>
                         </>
                       ) : null}
                     </td>
@@ -150,6 +153,7 @@ export default async function Fleet({
                 ))}
               </tbody>
             </table>
+            </div>
           ) : null}
         </>
       ) : null}
