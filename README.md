@@ -10,6 +10,9 @@ shipped one app with two human hand-offs left (deciding OTA-vs-native, and
 installing builds). Von's job is to remove those and run the loop for many apps
 at once.
 
+**Picking this up cold?** [`docs/HANDOFF.md`](docs/HANDOFF.md) — current state,
+the invariants that fail silently if broken, and what to do next.
+
 **Start with [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).** It answers the
 load-bearing question — how this scales without either drowning in GCP project
 quota or forcing every user through three OAuth screens and a credit card form.
